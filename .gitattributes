@@ -1,0 +1,15 @@
+# Normalise on commit, check out with native line endings.
+* text=auto
+
+*.cs      text diff=csharp
+*.csproj  text
+*.sln     text eol=crlf
+*.axaml   text
+*.manifest text
+*.md      text
+*.json    text
+
+*.png  binary
+*.ico  binary
+*.zip  binary
+*.exe  binary

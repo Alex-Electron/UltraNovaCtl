@@ -1,0 +1,24 @@
+# .NET build output
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+*.user
+*.suo
+
+# Packaged builds live here for convenience; releases are attached on GitHub
+dist/
+
+# Editor backups and OS cruft
+*.bak
+*.bak[0-9]
+*.swp
+*~
+.vs/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Runtime state, never part of the source
+ultranovactl.json
