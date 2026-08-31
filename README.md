@@ -1,12 +1,25 @@
 # UltraNovaCtl
 
-**English** · [Русский](./README.ru.md)
+Languages: **English** · [Русский](README.ru.md)
 
-A replacement for Novation's **Automap** for the **UltraNova** synthesizer: it takes the
-eight encoders, the filter knob, the patch dial, the touch sensors and the whole front
-panel, and turns them into ordinary MIDI your DAW can map.
+![UltraNovaCtl — the UltraNova's encoders, touch sensors and panel as ordinary MIDI](img/app.png)
 
-<img src="img/app.png" alt="UltraNovaCtl" width="100%">
+Developed by: Alexander Lavrinovich<br>
+GitHub: https://github.com/Alex-Electron<br>
+Email: lavrinovich.alex@gmail.com
+
+If you've enjoyed the project, it would be really nice of you to buy me a cup of coffee:
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/G2F222TXLI) [![DonationAlerts](https://img.shields.io/badge/Donate-DonationAlerts-fb5b2d?style=for-the-badge&logo=donationalerts&logoColor=white)](https://www.donationalerts.com/r/alex_electron)
+
+A replacement for Novation's **Automap**, for the **UltraNova** synthesizer. It takes the
+eight touch-sensitive encoders, the filter knob, the patch dial and the whole front panel —
+all of which go silent the moment the instrument enters Automap mode — and turns them into
+ordinary MIDI that any DAW can map. It writes back too: your own labels and live values on
+the synth's display, and every lamp on the panel under program control.
+
+The instrument becomes the controller it was sold as, without the software that stopped
+being maintained.
 
 ![license](https://img.shields.io/badge/license-MIT-blue)
 ![platform](https://img.shields.io/badge/platform-Windows%20x64-0078D6?logo=windows&logoColor=white)
@@ -30,13 +43,92 @@ long unmaintained.
 This program speaks that dialect. It reads the panel directly, writes to the instrument's
 display and lamps, and sends whatever you assign to a normal MIDI port:
 
-```
-UltraNova ──USB port 3──► UltraNovaCtl ──► virtual MIDI port ──► your DAW
+```mermaid
+flowchart LR
+    S["<b>UltraNova</b><br/>encoders · touch · panel"]
+    A["<b>UltraNovaCtl</b><br/>reads the panel<br/>paints display and lamps"]
+    V["<b>loopMIDI</b><br/>virtual port"]
+    D["<b>Your DAW</b><br/>Ableton, Bitwig, Reaper…"]
+
+    S -- "IN 0x85 · raw MIDI, private dialect" --> A
+    A -- "OUT 0x05 · display text, lamps" --> S
+    A -- "CC · notes · pitch bend<br/>keystrokes · transport" --> V
+    V --> D
+
+    classDef synth fill:#1e2128,stroke:#f0a04b,stroke-width:2px,color:#e8eaf0
+    classDef app   fill:#1e2128,stroke:#59b0f6,stroke-width:2px,color:#e8eaf0
+    classDef plain fill:#1e2128,stroke:#3a4050,color:#98a0b0
+    class S synth
+    class A app
+    class V,D plain
 ```
 
-The protocol is written up in [docs/PROTOCOL.md](docs/PROTOCOL.md) and the panel in
-[docs/PANEL-MAP.md](docs/PANEL-MAP.md), so the reverse-engineering is reusable even if you
-never run this application.
+Everything found along the way is written down, so the reverse-engineering stays useful
+even to someone who never runs this application.
+
+---
+
+## How it works
+
+The instrument presents four USB interfaces and **not one of them is USB-MIDI class** — all
+four are vendor-specific. Three carry what you would expect. The fourth is the one nothing
+else knows how to talk to.
+
+```mermaid
+flowchart TB
+    U["<b>UltraNova</b> · VID 0x1235 PID 0x0011<br/><i>four interfaces, all vendor-specific</i>"]
+    U --> I0["<b>IF0</b> · isochronous 0x01 / 0x82<br/>audio"]
+    U --> I1["<b>IF1</b> · 0x03 / 0x83<br/>MIDI port 1 — notes, wheels, aftertouch"]
+    U --> I2["<b>IF2</b> · 0x04 / 0x84<br/>MIDI port 2 — silent in every capture"]
+    U --> I3["<b>IF3</b> · 0x05 / 0x85<br/><b>Automap</b> — encoders, touch, buttons, display, lamps"]
+
+    classDef head fill:#1e2128,stroke:#3a4050,color:#e8eaf0
+    classDef dim  fill:#1e2128,stroke:#3a4050,color:#98a0b0
+    classDef hot  fill:#2a2118,stroke:#f0a04b,stroke-width:2px,color:#f0a04b
+    class U head
+    class I0,I1,I2 dim
+    class I3 hot
+```
+
+Turning one knob is a conversation, not a message. Touch arrives before the turn does, the
+ring lights from the host, and the value on the synth's own display is text this program
+writes there:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant H as Hand
+    participant S as UltraNova
+    participant C as UltraNovaCtl
+    participant D as DAW
+
+    H->>S: finger lands on encoder 3
+    S->>C: B1 03 01
+    C->>S: B0 45 01
+    Note right of C: ring 45 lights under that knob
+    H->>S: one detent clockwise
+    S->>C: B0 03 02
+    Note right of C: +2, scaled into the assigned range
+    C->>D: CC 24 = 66
+    C->>S: F0 02 01 1B "[ 66 ]" F7
+    H->>S: finger lifts
+    S->>C: B1 03 00
+    C->>S: B0 45 00
+```
+
+Full write-up: [docs/PROTOCOL.md](docs/PROTOCOL.md).
+
+---
+
+## The panel, mapped
+
+Every code here came off the wire — a button was pressed, or a lamp code was sent and
+somebody looked at the instrument. None of it is inferred from the order of names in a
+manual; that was tried, and it was wrong.
+
+<img src="img/panel-map.svg" alt="UltraNova front panel control map" width="100%">
+
+Reference table: [docs/PANEL-MAP.md](docs/PANEL-MAP.md).
 
 ---
 
@@ -81,31 +173,37 @@ against a plug-in or a second instrument.
 
 ---
 
+## What you need
+
+Three things, and one thing to get out of the way.
+
+| | |
+|---|---|
+| **Novation USB driver 2.30** | **Required.** The UltraNova has no USB-MIDI class interfaces at all — every one of its four USB interfaces is vendor-specific, so Windows cannot bind an in-box driver and exposes no device to open. [Download](https://downloads.focusrite.com/novation/synthesisers/ultranova) and install it before plugging the synth in. |
+| **A virtual MIDI port** | **Required.** This program creates no ports of its own; it sends to one that exists and your DAW listens to the other end. [loopMIDI](https://www.tobias-erichsen.de/software/loopmidi.html) is free for personal use — install, run, click `+`. |
+| **UltraNovaCtl** | A single self-contained `.exe` from [Releases](https://github.com/Alex-Electron/UltraNovaCtl/releases). **.NET does not need to be installed.** |
+| **The stock Automap** | Must not be running. `AutomapServer.exe` and `MidiAutomapClient.exe` hold the same USB endpoint and answer the synth first. Quit them, or uninstall Automap 4 — nothing here needs it. |
+
+> **Avoid `midi.exe loopback create` from Windows MIDI Services.** It works, and it will
+> quietly ruin the rest of your MIDI: on the development machine its endpoints pushed port
+> enumeration from 90 ms to 265 ms and stopped Ableton Live opening *any* MIDI input, the
+> synth's own port included. They route through the `MidiSrv` service that now backs all of
+> WinMM. loopMIDI has its own driver and leaves that alone.
+
 ## Getting started
 
-1. **Quit the stock Automap.** `AutomapServer.exe` and `MidiAutomapClient.exe` hold the same
-   USB endpoint and will answer the synth before this program does. Nothing works until they
-   are gone.
+1. Start **loopMIDI** and make a port.
+2. Start your **DAW** — after the port exists. Live builds its device list once, at startup.
+3. Run **`UltraNovaCtl.exe`** and pick the port under **MIDI out**.
+4. Press **AUTOMAP** on the instrument. The status line reads `connected to UltraNova` and
+   the display fills with labels.
+5. In the DAW, enable the loopMIDI port as an input and tick both **Remote** and **Track**.
 
-2. **Make a virtual MIDI port.** This program does not install a driver; it sends to a port
-   you already have. [loopMIDI](https://www.tobias-erichsen.de/software/loopmidi.html) is
-   free for personal use, and creating a port is one click on `+`.
+Turn encoder 1 — CC 21 should move. Click any knob or button in the window to reassign it,
+then press **Save**.
 
-   > Do not use `midi.exe loopback create` from Windows MIDI Services on Windows 11. It
-   > works, but its endpoints route through the `MidiSrv` service that now backs all of
-   > WinMM: port enumeration went from 90 ms to 265 ms on the test machine and Ableton Live
-   > stopped opening any MIDI input at all, including the synth's own.
-
-3. **Run `UltraNovaCtl.exe`**, pick your port in **MIDI out**, and press **AUTOMAP** on the
-   instrument. The title strip says `connected to UltraNova` and the display fills with your
-   labels.
-
-4. **In your DAW**, enable the loopMIDI port as an input. Ableton Live builds its device
-   list at startup, so if you created the port after Live was running, restart Live — then
-   tick both `Remote` and `Track` for that input.
-
-Click any knob or button in the window to assign it. Settings live in `ultranovactl.json`
-next to the executable.
+**→ [The full guide](docs/GUIDE.md)** — every control, every send type, every mode, learn,
+banks and pages, panel feedback, and what to do when something is wrong.
 
 ---
 
@@ -118,10 +216,14 @@ UltraNovaCtl/
 ├── LICENSE                    # MIT
 ├── UltraNovaCtl.sln
 ├── docs/
+│   ├── GUIDE.md               # the full guide — start here
+│   ├── GUIDE.ru.md            # …in Russian
 │   ├── PROTOCOL.md            # the Automap protocol, as captured from the wire
 │   ├── PANEL-MAP.md           # every button, lamp and encoder code
 │   └── BUILD.md               # how to build it
 ├── img/
+│   ├── app.png                # the window
+│   └── panel-map.svg          # the panel diagram above
 └── src/
     ├── Core/                  # protocol engine, Kernel Streaming, config model, MIDI out
     ├── Gui/                   # Avalonia window and tray icon
@@ -164,4 +266,3 @@ Not affiliated with, endorsed by, or supported by Focusrite or Novation. *Automa
 ## Author
 
 **Alexander Lavrinovich** · <lavrinovich.alex@gmail.com> · [github.com/Alex-Electron](https://github.com/Alex-Electron)
-Co-author: AI.

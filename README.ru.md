@@ -1,12 +1,25 @@
 # UltraNovaCtl
 
-[English](./README.md) · **Русский**
+Языки: [English](README.md) · **Русский**
 
-Замена Novation **Automap** для синтезатора **UltraNova**: восемь энкодеров, ручка фильтра,
-колесо патчей, сенсоры прикосновения и вся передняя панель превращаются в обычный MIDI,
-который понимает любая DAW.
+![UltraNovaCtl — энкодеры, сенсоры и панель UltraNova как обычный MIDI](img/app.png)
 
-<img src="img/app.png" alt="UltraNovaCtl" width="100%">
+Автор: Alexander Lavrinovich<br>
+GitHub: https://github.com/Alex-Electron<br>
+Email: lavrinovich.alex@gmail.com
+
+Если проект вам пригодился, будет очень приятно, если купите мне чашку кофе:
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/G2F222TXLI) [![DonationAlerts](https://img.shields.io/badge/Donate-DonationAlerts-fb5b2d?style=for-the-badge&logo=donationalerts&logoColor=white)](https://www.donationalerts.com/r/alex_electron)
+
+Замена Novation **Automap** для синтезатора **UltraNova**. Восемь сенсорных энкодеров, ручка
+фильтра, колесо патчей и вся передняя панель — всё, что замолкает в тот момент, когда
+инструмент переходит в режим Automap, — превращаются в обычный MIDI, который сопоставит любая
+DAW. И обратно тоже: ваши собственные метки и живые значения на дисплее синтезатора, и каждая
+лампа на панели под управлением программы.
+
+Инструмент становится тем контроллером, каким его продавали, — без софта, который перестали
+поддерживать.
 
 ![license](https://img.shields.io/badge/license-MIT-blue)
 ![platform](https://img.shields.io/badge/platform-Windows%20x64-0078D6?logo=windows&logoColor=white)
@@ -31,13 +44,92 @@
 Эта программа говорит на том самом диалекте. Она читает панель напрямую, пишет на дисплей и
 светодиоды инструмента и отправляет назначенное в обычный MIDI-порт:
 
-```
-UltraNova ──USB-порт 3──► UltraNovaCtl ──► виртуальный MIDI-порт ──► DAW
+```mermaid
+flowchart LR
+    S["<b>UltraNova</b><br/>энкодеры · касания · панель"]
+    A["<b>UltraNovaCtl</b><br/>читает панель<br/>рисует дисплей и лампы"]
+    V["<b>loopMIDI</b><br/>виртуальный порт"]
+    D["<b>Ваша DAW</b><br/>Ableton, Bitwig, Reaper…"]
+
+    S -- "IN 0x85 · сырой MIDI, приватный диалект" --> A
+    A -- "OUT 0x05 · текст дисплея, лампы" --> S
+    A -- "CC · notes · pitch bend<br/>клавиши · транспорт" --> V
+    V --> D
+
+    classDef synth fill:#1e2128,stroke:#f0a04b,stroke-width:2px,color:#e8eaf0
+    classDef app   fill:#1e2128,stroke:#59b0f6,stroke-width:2px,color:#e8eaf0
+    classDef plain fill:#1e2128,stroke:#3a4050,color:#98a0b0
+    class S synth
+    class A app
+    class V,D plain
 ```
 
-Протокол описан в [docs/PROTOCOL.md](docs/PROTOCOL.md), карта панели —
-в [docs/PANEL-MAP.md](docs/PANEL-MAP.md), так что результат реверс-инжиниринга применим и
-без этой программы.
+Всё найденное записано, так что результат реверс-инжиниринга остаётся полезным и тому,
+кто никогда не запустит саму программу.
+
+---
+
+## Как это устроено
+
+У инструмента четыре USB-интерфейса, и **ни один из них не класса USB-MIDI** — все четыре
+вендорные. Три несут ожидаемое. Четвёртый — тот самый, с которым больше никто не умеет
+разговаривать.
+
+```mermaid
+flowchart TB
+    U["<b>UltraNova</b> · VID 0x1235 PID 0x0011<br/><i>четыре интерфейса, все вендорные</i>"]
+    U --> I0["<b>IF0</b> · изохронный 0x01 / 0x82<br/>аудио"]
+    U --> I1["<b>IF1</b> · 0x03 / 0x83<br/>MIDI-порт 1 — ноты, колёса, афтертач"]
+    U --> I2["<b>IF2</b> · 0x04 / 0x84<br/>MIDI-порт 2 — молчит во всех захватах"]
+    U --> I3["<b>IF3</b> · 0x05 / 0x85<br/><b>Automap</b> — энкодеры, касания, кнопки, дисплей, лампы"]
+
+    classDef head fill:#1e2128,stroke:#3a4050,color:#e8eaf0
+    classDef dim  fill:#1e2128,stroke:#3a4050,color:#98a0b0
+    classDef hot  fill:#2a2118,stroke:#f0a04b,stroke-width:2px,color:#f0a04b
+    class U head
+    class I0,I1,I2 dim
+    class I3 hot
+```
+
+Поворот одной ручки — это разговор, а не сообщение. Касание приходит раньше вращения,
+кольцо зажигает хост, а значение на дисплее синтезатора — текст, который туда пишет
+эта программа:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant H as Рука
+    participant S as UltraNova
+    participant C as UltraNovaCtl
+    participant D as DAW
+
+    H->>S: палец лёг на энкодер 3
+    S->>C: B1 03 01
+    C->>S: B0 45 01
+    Note right of C: под ручкой зажглось кольцо 45
+    H->>S: щелчок по часовой
+    S->>C: B0 03 02
+    Note right of C: +2, пересчитано в заданный диапазон
+    C->>D: CC 24 = 66
+    C->>S: F0 02 01 1B "[ 66 ]" F7
+    H->>S: палец убран
+    S->>C: B1 03 00
+    C->>S: B0 45 00
+```
+
+Подробно: [docs/PROTOCOL.md](docs/PROTOCOL.md).
+
+---
+
+## Карта панели
+
+Каждый код здесь снят с провода — кнопка была нажата, или код лампы отправлен и кто-то
+посмотрел на прибор. Ничего не выведено из порядка названий в руководстве; так пробовали,
+и получилось неверно.
+
+<img src="img/panel-map.svg" alt="Карта органов управления UltraNova" width="100%">
+
+Таблица: [docs/PANEL-MAP.md](docs/PANEL-MAP.md).
 
 ---
 
@@ -82,29 +174,38 @@ Signed Bit, Signed Bit 2, Binary Offset). Для кнопок: Momentary, Normal
 
 ---
 
+## Что нужно
+
+Три вещи и одна, которую надо убрать с дороги.
+
+| | |
+|---|---|
+| **Драйвер Novation USB 2.30** | **Обязательно.** У UltraNova вообще нет интерфейсов класса USB-MIDI — все четыре вендорные, поэтому Windows не может привязать встроенный драйвер и не показывает устройства, которое можно открыть. [Скачать](https://downloads.focusrite.com/novation/synthesisers/ultranova) и поставить до подключения синтезатора. |
+| **Виртуальный MIDI-порт** | **Обязательно.** Программа не создаёт портов; она пишет в существующий, а DAW слушает другой его конец. [loopMIDI](https://www.tobias-erichsen.de/software/loopmidi.html) бесплатен для личного использования — поставить, запустить, нажать `+`. |
+| **UltraNovaCtl** | Один самодостаточный `.exe` из [Releases](https://github.com/Alex-Electron/UltraNovaCtl/releases). **.NET ставить не надо.** |
+| **Штатный Automap** | Не должен работать. `AutomapServer.exe` и `MidiAutomapClient.exe` держат тот же USB-эндпоинт и отвечают синтезатору первыми. Закройте их или удалите Automap 4 — здесь он не нужен ни для чего. |
+
+> **Не используйте `midi.exe loopback create` из Windows MIDI Services.** Оно работает — и
+> тихо ломает весь остальной MIDI: на машине разработки его эндпоинты увеличили перечисление
+> портов с 90 мс до 265 мс и заставили Ableton Live не открывать *ни одного* MIDI-входа,
+> включая штатный порт синтезатора. Они идут через службу `MidiSrv`, на которую теперь
+> опирается весь WinMM. У loopMIDI свой драйвер, эту службу он не трогает.
+
 ## С чего начать
 
-1. **Закройте штатный Automap.** `AutomapServer.exe` и `MidiAutomapClient.exe` держат тот же
-   USB-эндпоинт и отвечают синтезатору раньше нас. Пока они живы, ничего не заработает.
+1. Запустите **loopMIDI** и создайте порт.
+2. Запустите **DAW** — уже после того, как порт появился. Live строит список устройств один
+   раз, при старте.
+3. Запустите **`UltraNovaCtl.exe`** и выберите порт в **MIDI out**.
+4. Нажмите **AUTOMAP** на инструменте. В строке состояния появится `connected to UltraNova`,
+   а дисплей заполнится метками.
+5. В DAW включите порт loopMIDI как вход и поставьте галочки **Remote** и **Track**.
 
-2. **Заведите виртуальный MIDI-порт.** Программа не ставит драйвер — она пишет в уже
-   существующий порт. [loopMIDI](https://www.tobias-erichsen.de/software/loopmidi.html)
-   бесплатен для личного использования, порт создаётся кнопкой `+`.
+Покрутите первый энкодер — должен зашевелиться CC 21. Щёлкните по любой ручке или кнопке в
+окне, чтобы переназначить, и нажмите **Save**.
 
-   > Не используйте `midi.exe loopback create` из Windows MIDI Services на Windows 11.
-   > Оно работает, но его эндпоинты идут через службу `MidiSrv`, на которую теперь опирается
-   > весь WinMM: на тестовой машине перечисление портов выросло с 90 мс до 265 мс, а Ableton
-   > Live вообще перестал открывать MIDI-входы, включая штатный порт синтезатора.
-
-3. **Запустите `UltraNovaCtl.exe`**, выберите порт в **MIDI out** и нажмите **AUTOMAP** на
-   инструменте. В строке состояния появится `connected to UltraNova`, а на дисплее — ваши метки.
-
-4. **В DAW** включите порт loopMIDI как вход. Ableton Live строит список устройств при
-   запуске: если порт создан позже — перезапустите Live, затем поставьте этому входу галочки
-   `Remote` и `Track`.
-
-Чтобы назначить — щёлкните по ручке или кнопке в окне. Настройки лежат в `ultranovactl.json`
-рядом с исполняемым файлом.
+**→ [Полное руководство](docs/GUIDE.ru.md)** — каждый контрол, все типы отправки, все режимы,
+обучение, банки и страницы, обратная связь на панели и что делать, когда что-то не так.
 
 ---
 
@@ -117,10 +218,14 @@ UltraNovaCtl/
 ├── LICENSE                    # MIT
 ├── UltraNovaCtl.sln
 ├── docs/
+│   ├── GUIDE.ru.md            # полное руководство — начинать отсюда
+│   ├── GUIDE.md               # …по-английски
 │   ├── PROTOCOL.md            # протокол Automap, снятый с провода
 │   ├── PANEL-MAP.md           # коды всех кнопок, ламп и энкодеров
 │   └── BUILD.md               # как собрать
 ├── img/
+│   ├── app.png                # окно
+│   └── panel-map.svg          # схема панели выше
 └── src/
     ├── Core/                  # движок протокола, Kernel Streaming, модель настроек, MIDI-выход
     ├── Gui/                   # окно Avalonia и иконка в трее
@@ -163,4 +268,3 @@ MIT, см. [LICENSE](LICENSE).
 ## Автор
 
 **Alexander Lavrinovich** · <lavrinovich.alex@gmail.com> · [github.com/Alex-Electron](https://github.com/Alex-Electron)
-Co-author: AI.
