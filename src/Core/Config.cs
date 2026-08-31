@@ -217,6 +217,13 @@ public sealed class Config
     public const int BtnLearn = 0, BtnView = 1;
 
     /// <summary>
+    /// The two mode lamps. They have no buttons that report a press - SYNTH and AUTOMAP
+    /// change the instrument's mode and that change is all the host ever hears - but the
+    /// lamps themselves are ours to drive.
+    /// </summary>
+    public const int LedSynth = 12, LedAutomap = 14;
+
+    /// <summary>
     /// Buttons the application uses for itself. They drive navigation and cannot be
     /// mapped: offering them would let a user silently break the way the panel works.
     /// </summary>
@@ -240,8 +247,45 @@ public sealed class Config
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
     };
 
-    public static string DefaultPath =>
-        Path.Combine(AppContext.BaseDirectory, "ultranovactl.json");
+    const string FileName = "ultranovactl.json";
+
+    /// <summary>
+    /// Where the settings live, worked out once and remembered.
+    ///
+    /// Beside the executable when that works: it keeps a copy on a USB stick portable, and it
+    /// is where every installation so far already has its file. But an install under Program
+    /// Files is read-only for a standard user, and silently losing somebody's whole mapping is
+    /// not an acceptable way to find that out, so there the file moves to the roaming profile.
+    /// </summary>
+    public static string DefaultPath => _path ??= ResolvePath();
+    static string _path;
+
+    static string ResolvePath()
+    {
+        string beside = Path.Combine(AppContext.BaseDirectory, FileName);
+
+        // A file already sitting there wins outright - never strand existing settings.
+        if (File.Exists(beside)) return beside;
+        if (IsWritable(AppContext.BaseDirectory)) return beside;
+
+        string dir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "UltraNovaCtl");
+        try { Directory.CreateDirectory(dir); } catch { return beside; }
+        return Path.Combine(dir, FileName);
+    }
+
+    /// <summary>Asks the file system instead of guessing from the shape of the path.</summary>
+    static bool IsWritable(string dir)
+    {
+        string probe = Path.Combine(dir, ".write-probe-" + Environment.ProcessId);
+        try
+        {
+            using (File.Create(probe, 1, FileOptions.DeleteOnClose)) { }
+            return true;
+        }
+        catch { return false; }
+    }
 
     public static Config Load(string path = null)
     {

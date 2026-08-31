@@ -378,6 +378,7 @@ public sealed class AutomapEngine : IDisposable
                 SetLed(code, false);
                 Thread.Sleep(offMs);
             }
+            LightMode();
             LightBanks();
             RefreshRings();
         })
@@ -448,8 +449,24 @@ public sealed class AutomapEngine : IDisposable
         Thread.Sleep(3);
         _repaintAll = true;
         _paintWake.Set();
+        LightMode();
         LightBanks();
         RefreshRings();
+    }
+
+    /// <summary>
+    /// Hold the AUTOMAP lamp on for as long as we are the server, and keep SYNTH dark.
+    ///
+    /// The instrument lights AUTOMAP itself when the button is pressed and then lets it go
+    /// again. Neither mode lamp is ever written in the captures, so on the stock setup it
+    /// presumably just went dark too - but a dark lamp next to a plainly active mode is
+    /// wrong, so we assert it, and re-assert wherever the panel is repainted.
+    /// </summary>
+    public void LightMode()
+    {
+        if (!AutomapActive) return;
+        SetLed(Config.LedAutomap, true);
+        SetLed(Config.LedSynth, false);
     }
 
     public void SetPage(int index)

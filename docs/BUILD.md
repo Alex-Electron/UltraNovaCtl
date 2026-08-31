@@ -25,6 +25,25 @@ dotnet publish src/Gui/UltraNovaCtl.Gui.csproj -c Release -r win-x64 --self-cont
 
 About 45 MB, because the runtime and Skia are inside it.
 
+## The installer
+
+[Inno Setup 6](https://jrsoftware.org/isdl.php) builds it. The script expects the published
+application already sitting in `dist\UltraNovaCtl-win-x64\`, so publish first, then:
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" installer\UltraNovaCtl.iss
+```
+
+Out comes `dist\UltraNovaCtl-1.0.0-setup.exe`. CI does the same on every push and keeps it
+as an artifact.
+
+To exercise it without clicking through the wizard:
+
+```powershell
+.\dist\UltraNovaCtl-1.0.0-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /TASKS=autostart
+& "$env:LOCALAPPDATA\Programs\UltraNovaCtl\unins000.exe" /VERYSILENT /SUPPRESSMSGBOXES
+```
+
 ## Projects
 
 | Project | What it is |

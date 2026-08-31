@@ -132,7 +132,7 @@ Three things, and one thing to get out of the way.
 |---|---|
 | **Novation USB driver 2.30** | **Required.** The UltraNova has no USB-MIDI class interfaces at all — every one of its four USB interfaces is vendor-specific, so Windows cannot bind an in-box driver and exposes no device to open. [Download](https://downloads.focusrite.com/novation/synthesisers/ultranova) and install it before plugging the synth in. |
 | **A virtual MIDI port** | **Required.** This program creates no ports of its own; it sends to one that exists and your DAW listens to the other end. [loopMIDI](https://www.tobias-erichsen.de/software/loopmidi.html) is free for personal use — install, run, click `+`. |
-| **UltraNovaCtl** | A single self-contained `.exe` from [Releases](https://github.com/Alex-Electron/UltraNovaCtl/releases). **.NET does not need to be installed.** |
+| **UltraNovaCtl** | The installer or the zip from [Releases](https://github.com/Alex-Electron/UltraNovaCtl/releases) — a single self-contained `.exe` either way, so **.NET does not need to be installed**. The installer puts it under `%LOCALAPPDATA%\Programs`, adds a Start menu shortcut, can set it to start with Windows, and checks the two components above for you. It asks for no administrator rights. |
 | **The stock Automap** | Must not be running. `AutomapServer.exe` and `MidiAutomapClient.exe` hold the same USB endpoint and answer the synth first. Quit them, or uninstall Automap 4 — nothing here needs it. |
 
 > **Avoid `midi.exe loopback create` from Windows MIDI Services.** It works, and it will
@@ -247,6 +247,8 @@ UltraNovaCtl/
 ├── README.ru.md               # Russian
 ├── LICENSE                    # MIT
 ├── UltraNovaCtl.sln
+├── installer/
+│   └── UltraNovaCtl.iss       # Inno Setup script
 ├── docs/
 │   ├── GUIDE.md               # the full guide — start here
 │   ├── GUIDE.ru.md            # …in Russian

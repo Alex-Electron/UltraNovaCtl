@@ -33,3 +33,14 @@ jobs:
         with:
           name: UltraNovaCtl-win-x64
           path: dist/UltraNovaCtl-win-x64
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build the installer
+        run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer\UltraNovaCtl.iss'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: UltraNovaCtl-setup
+          path: dist/*-setup.exe

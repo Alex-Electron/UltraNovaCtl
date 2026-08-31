@@ -186,6 +186,10 @@ public partial class MainWindow : Window
         // the control sends: controller numbers, note names, or nothing at all.
 
         _engine.Config = Config.Load();
+        // Worth saying out loud. It is beside the executable normally, but moves to the
+        // roaming profile when the install directory is read-only, and "where did my
+        // mappings go" is otherwise a hard question to answer.
+        Enqueue("settings: " + Config.DefaultPath);
         BuildPortList();
         BuildBankTabs();
         BuildTiles();

@@ -53,9 +53,22 @@ running; the port disappears when it closes.
 
 ### 1.3 UltraNovaCtl itself
 
-Take the zip from [Releases](https://github.com/Alex-Electron/UltraNovaCtl/releases), unpack
-it anywhere, run `UltraNovaCtl.exe`. It is a single self-contained executable — **.NET does
-not need to be installed**, the runtime is inside it.
+Two ways, both on [Releases](https://github.com/Alex-Electron/UltraNovaCtl/releases):
+
+**The installer** — `UltraNovaCtl-1.0.0-setup.exe`. Installs into
+`%LOCALAPPDATA%\Programs\UltraNovaCtl` **without asking for administrator rights**, adds a
+Start menu shortcut and an entry in Installed apps, offers to start with Windows, and tells
+you whether the driver and a virtual port are there before it finishes. Per-user on purpose:
+settings live beside the executable, and a standard user cannot write inside Program Files.
+
+**Or the zip** — unpack anywhere, run `UltraNovaCtl.exe`. Nothing else to do.
+
+Either way it is a single self-contained executable: **.NET does not need to be installed**,
+the runtime is inside it.
+
+> The installer is not code-signed, so Windows SmartScreen will say *"Windows protected your
+> PC"*. **More info → Run anyway.** Signing needs a certificate issued to a named person or
+> company, and there is not one here.
 
 Building from source instead? Then you need the .NET SDK 8.0 and nothing else — see
 [BUILD.md](BUILD.md).
