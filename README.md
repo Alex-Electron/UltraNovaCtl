@@ -221,9 +221,10 @@ Two things on that picture are worth pausing over, because both cost time to fin
 
 **Buttons and lamps share numbering only up to 34.** Up to there a code is both the button
 and its own lamp, so one number says it all. Past 34 the numberings fork — 35 is `VALUE +`
-when you press it and the second vocoder indicator when you light it — so those chips carry
-a `B` for button or an `L` for lamp. The clearest place to see it is the SELECT block, where
-buttons `B37` and `B38` sit right beside lamps `L36`–`L41`, and none of the numbers line up.
+when you press it and the second vocoder indicator when you light it. On the picture the
+chip colour is what tells the two apart: orange for a button code, blue for a lamp. The
+clearest place to see the fork is the SELECT block, where buttons 37 and 38 sit right beside
+lamps 36–41 and not one of the numbers lines up.
 
 **`SYNTH` and `AUTOMAP` never report a press.** They change the instrument's mode, and the
 mode change is the only thing the host hears about. They do have lamps, 12 and 14 — which is
