@@ -37,6 +37,12 @@ virtual port the stock software installs. They are not idle — they are talking
 vendor USB endpoint in a private dialect, to a piece of software that will only hand the
 result to plug-ins as host automation, never as MIDI you can route.
 
+<img src="img/panel.png" alt="The UltraNova control panel" width="100%">
+
+*Eight touch-sensitive encoders over a 72-character display, an Automap row, and a filter
+knob that follows whichever encoder you touched last. In Automap mode none of it reaches
+a MIDI port.*
+
 So the encoders are unusable for anything Automap did not think of, and Automap itself is
 long unmaintained.
 
@@ -209,9 +215,21 @@ Every code here came off the wire — a button was pressed, or a lamp code was s
 somebody looked at the instrument. None of it is inferred from the order of names in a
 manual; that was tried, and it was wrong.
 
-<img src="img/panel-map.svg" alt="UltraNova front panel control map" width="100%">
+<img src="img/panel-codes.png" alt="The UltraNova panel with every measured code" width="100%">
 
-Reference table: [docs/PANEL-MAP.md](docs/PANEL-MAP.md).
+Two things on that picture are worth pausing over, because both cost time to find out.
+
+**Buttons and lamps share numbering only up to 34.** Past that the lamps run on into
+indicators that have no button behind them. Code 35 is `VALUE +` when you press it, and the
+second vocoder indicator when you light it.
+
+**`SYNTH` and `AUTOMAP` never report a press.** They change the instrument's mode, and the
+mode change is the only thing the host hears about. They do have lamps, 12 and 14 — which is
+why guessing the codes from the order of names in the manual gives the wrong answer for
+everything after them.
+
+Reference table: [docs/PANEL-MAP.md](docs/PANEL-MAP.md), which also carries a drawn version
+of this diagram.
 
 ---
 
@@ -231,8 +249,10 @@ UltraNovaCtl/
 │   └── BUILD.md               # how to build it
 ├── img/
 │   ├── ultranova.png          # the instrument, background removed
+│   ├── panel.png              # the control panel, close up
+│   ├── panel-codes.png        # …the same, annotated with every code
 │   ├── app.png                # the window
-│   └── panel-map.svg          # the panel diagram above
+│   └── panel-map.svg          # a drawn version of the map
 └── src/
     ├── Core/                  # protocol engine, Kernel Streaming, config model, MIDI out
     ├── Gui/                   # Avalonia window and tray icon
@@ -271,7 +291,8 @@ output.
 
 MIT. See [LICENSE](LICENSE).
 
-Product photograph of the instrument: [amazona.de](https://www.amazona.de/).
+Product photograph of the instrument: [amazona.de](https://www.amazona.de/). The control
+panel artwork is from Novation's own user guide; the codes on it are this project's own.
 
 Not affiliated with, endorsed by, or supported by Focusrite or Novation. *Automap*,
 *Novation* and *UltraNova* are their trademarks, used here only to say what this works with.

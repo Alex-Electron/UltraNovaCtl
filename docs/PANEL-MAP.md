@@ -6,6 +6,11 @@ from the order of names in a manual — that was tried, and it was wrong.
 
 Button codes arrive as `B2 <code> <1|0>`. Lamp codes are sent as `B0 <code> <1|0>`.
 
+<img src="../img/panel-map.svg" alt="UltraNova control map" width="100%">
+
+*The same information drawn from scratch, for anyone who wants a diagram that owes nothing
+to the manufacturer's artwork.*
+
 ---
 
 ## Buttons
