@@ -29,6 +29,15 @@ jobs:
           -p:DebugType=none
           -o dist/UltraNovaCtl-win-x64
 
+      - name: Publish the console tool
+        run: >
+          dotnet publish src/KsMidiMon/KsMidiMon.csproj -c Release -r win-x64
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:EnableCompressionInSingleFile=true
+          -p:DebugType=none
+          -o dist/UltraNovaCtl-win-x64/tools
+
       - name: Add the release readme
         run: copy installer\RELEASE-README.txt dist\UltraNovaCtl-win-x64\README.txt
 
