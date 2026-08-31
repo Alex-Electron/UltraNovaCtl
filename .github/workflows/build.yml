@@ -29,6 +29,9 @@ jobs:
           -p:DebugType=none
           -o dist/UltraNovaCtl-win-x64
 
+      - name: Add the release readme
+        run: copy installer\RELEASE-README.txt dist\UltraNovaCtl-win-x64\README.txt
+
       - uses: actions/upload-artifact@v4
         with:
           name: UltraNovaCtl-win-x64

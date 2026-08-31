@@ -71,7 +71,8 @@ Name: "autostart";   Description: "Start with Windows, straight into the tray"
 
 [Files]
 Source: "{#SourceDir}\{#AppExe}";          DestDir: "{app}"; Flags: ignoreversion
-Source: "{#SourceDir}\README.txt";         DestDir: "{app}"; Flags: ignoreversion isreadme
+; Kept in the repository, not in dist: dist is a build output and CI has no copy of it.
+Source: "RELEASE-README.txt"; DestDir: "{app}"; DestName: "README.txt"; Flags: ignoreversion isreadme
 Source: "{#SourceDir}\tools\KsMidiMon.exe"; DestDir: "{app}\tools"; Flags: ignoreversion
 
 [Icons]
