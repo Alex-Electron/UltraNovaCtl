@@ -48,8 +48,17 @@ F0 00 01 F7     in Automap
 F0 00 00 F7     left Automap
 ```
 
-Both directions send it, and both repeat it — the synth re-announces its state as a
-keepalive, so treat a repeat as "still there", not as a transition.
+Both directions send it, and both repeat it. The synth's announcement comes as a **burst of
+three inside about 17 ms** at each entry, with minutes of silence between entries — so this
+is not a periodic keepalive. A repeat is the same transition arriving again, not a new one,
+and not evidence that the link is still alive.
+
+**Answering the handshake takes the panel over.** Once the host replies, the synth stops
+driving its own lamps and blanks them — including the AUTOMAP lamp it lit when the button
+was pressed. Leave it at that and the lamp just goes out, which is evidently what the stock
+software did: it writes neither lamp 12 nor lamp 14 anywhere in either capture. A server
+that wants the mode shown has to light code 14 itself, on every announcement of the burst,
+because each hand-over blanks the panel again.
 
 **The host cannot push the synth out of Automap mode.** Across every capture the host sent
 `F0 00 01 F7` twelve times and `F0 00 00 F7` never; `00` only ever arrives *from* the

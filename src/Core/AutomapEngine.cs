@@ -439,6 +439,12 @@ public sealed class AutomapEngine : IDisposable
     public void Initialise()
     {
         Announce();
+
+        // Immediately, not at the end: answering the handshake is what makes the synth
+        // hand the panel over and blank it, and the register writes below take some
+        // 25 ms. Lighting the lamp only after them is long enough to see it blink.
+        LightMode();
+
         foreach (byte reg in new byte[] { 0, 2, 1, 3, 5, 6 })
         { Write(new byte[] { 0xBF, reg, 0x00 }); Thread.Sleep(3); }
 
@@ -452,6 +458,20 @@ public sealed class AutomapEngine : IDisposable
         LightMode();
         LightBanks();
         RefreshRings();
+
+        // And once more a moment later. The synth does its blanking on its own schedule,
+        // and a clear that lands after this method has finished would otherwise leave the
+        // panel dark until something else happened to repaint it.
+        var t = new Thread(() =>
+        {
+            Thread.Sleep(250);
+            if (_stop || !AutomapActive) return;
+            LightMode();
+            LightBanks();
+            RefreshRings();
+        })
+        { IsBackground = true, Name = "panel-settle" };
+        t.Start();
     }
 
     /// <summary>
@@ -698,12 +718,20 @@ public sealed class AutomapEngine : IDisposable
 
     void OnMode(bool on)
     {
-        // The synth repeats its mode announcement as a keepalive. Treating every repeat
-        // as a fresh entry floods the log and re-initialises the display for nothing.
+        // The announcement arrives as a burst - three within about 17 ms at each entry,
+        // measured in both captures, with minutes of silence in between. So a repeat is
+        // not a fresh entry and must not re-run the whole initialisation or log again,
+        // but it is still worth answering: the synth blanks the panel every time it hands
+        // control over, and each announcement in the burst is another chance to lose the
+        // mode lamp to that. Re-asserting it costs two bytes and no noise.
         bool changed = !_modeKnown || on != AutomapActive;
         _modeKnown = true;
         AutomapActive = on;
-        if (!changed) return;
+        if (!changed)
+        {
+            if (on) LightMode();
+            return;
+        }
 
         ModeChanged?.Invoke(this, on);
 
