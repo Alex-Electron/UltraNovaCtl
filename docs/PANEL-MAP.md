@@ -57,9 +57,23 @@ reported, so they are available if you want them.
 42–49   the rings under encoders 1–8
 ```
 
-> **Buttons and lamps share numbering only up to code 34.** Past that the lamps run on into
-> indicators that have no button behind them. Code 35 is `VALUE +` when pressed and the
-> vocoder indicator when lit. Above 49 nothing new lights up.
+> **Buttons and lamps share numbering only up to code 34.** Up to there a code is both the
+> button and its own lamp. Past 34 the two numberings fork and the same digits mean two
+> different things depending on which way the message is travelling:
+
+| Code | As a button — `B2 <code>` from the synth | As a lamp — `B0 <code>` to the synth |
+|---:|---|---|
+| 35 | VALUE + | the second vocoder indicator |
+| 36 | VALUE − | SELECT 1 |
+| 37 | SELECT ▲ | SELECT 2 |
+| 38 | SELECT ▼ | SELECT 3 |
+| 39 | patch dial push | SELECT 4 |
+| 40 | — | SELECT 5 |
+| 41 | — | SELECT 6 |
+| 42–49 | — | the rings under encoders 1–8 |
+
+So a button above 34 has no lamp of its own, and a lamp above 34 has no button. Above 49
+nothing new lights up.
 
 The three `RATE` lamps on the LFO section are driven by the LFOs themselves and cannot be
 addressed by the host.
