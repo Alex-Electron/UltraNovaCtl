@@ -55,7 +55,7 @@ running; the port disappears when it closes.
 
 Two ways, both on [Releases](https://github.com/Alex-Electron/UltraNovaCtl/releases):
 
-**The installer** — `UltraNovaCtl-1.1.0-setup.exe`. Installs into
+**The installer** — `UltraNovaCtl-1.1.1-setup.exe`. Installs into
 `%LOCALAPPDATA%\Programs\UltraNovaCtl` **without asking for administrator rights**, adds a
 Start menu shortcut and an entry in Installed apps, offers to start with Windows, and tells
 you whether the driver and a virtual port are there before it finishes. Per-user on purpose:
@@ -153,9 +153,12 @@ live value and its assignment. `Zero all` resets the values, not the assignments
 **BUTTONS** — all the assignable panel buttons. `Light buttons when pressed` echoes each
 press on that button's own lamp.
 
-**Reserved for navigation** and **Panel LEDs** are collapsed by default. The first lists the
-buttons this program keeps for itself. The second is a lamp prober: type a code, press
-`Light`, look at the instrument, and name what lit up.
+**Reserved for navigation** is collapsed by default. It lists the buttons this program keeps
+for itself (USER / FX / INST / MIXER / PAGE, and LEARN / VIEW until you assign them).
+
+**Debug tools** are off unless you tick them in the tray (or start with `--debug`). That
+session then shows the lamp walker — `Light` / `Clear` / previous / next / `All off` — and
+lets you assign MIDI to LEARN and VIEW. The switch is not saved with the map.
 
 **Log** — everything that happened. Drag the divider to resize it, select text with the
 mouse, `Ctrl+C` or the right-click menu to copy, `Save…` to write the lot to a file.

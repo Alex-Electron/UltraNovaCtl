@@ -185,8 +185,10 @@ public sealed class Config
 
     /// <summary>
     /// Panel LED walker, All off, naming codes by eye — the tools used to map the
-    /// hardware. Off by default so a mapping session is not a lamp test.
+    /// hardware. Off by default so a mapping session is not a lamp test. Not saved:
+    /// tray "Debug tools" or <c>--debug</c> for this session only.
     /// </summary>
+    [JsonIgnore]
     public bool ShowDebugTools { get; set; }
 
     /// <summary>

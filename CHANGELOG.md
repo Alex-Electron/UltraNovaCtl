@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.1 — 2026-08-31
+
+The lamp walker follows the same rules as LEARN / VIEW assignments.
+
+- Light, Clear, previous, next and All off only while Debug tools is on.
+- The Debug tools tick is not saved with the map. Next session starts with the bench hidden unless you pass `--debug` or tick the tray again.
+
 ## 1.1.0 — 2026-08-31
 
 Functional release on the 1.0 window. A later 2.x will redo the layout and colours.

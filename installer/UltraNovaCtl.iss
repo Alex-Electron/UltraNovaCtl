@@ -16,7 +16,7 @@
 ; Expects the published application in dist\UltraNovaCtl-win-x64\.
 
 #define AppName        "UltraNovaCtl"
-#define AppVersion     "1.1.0"
+#define AppVersion     "1.1.1"
 #define AppPublisher   "Alexander Lavrinovich"
 #define AppURL         "https://github.com/Alex-Electron/UltraNovaCtl"
 #define AppExe         "UltraNovaCtl.exe"

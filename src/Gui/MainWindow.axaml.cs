@@ -894,8 +894,11 @@ public partial class MainWindow : Window
         };
     }
 
+    bool DebugBenchOpen => _engine.Config.ShowDebugTools;
+
     void LightLed(bool on)
     {
+        if (!DebugBenchOpen) return;
         if (!_engine.Connected) { Enqueue("not connected"); return; }
         int code = Math.Max(0, _ledCode.SelectedIndex);
         _engine.SetLed(code, on);
@@ -905,6 +908,7 @@ public partial class MainWindow : Window
     /// <summary>Step to the next code and light it, so a whole range can be walked.</summary>
     void StepLed(int delta)
     {
+        if (!DebugBenchOpen) return;
         int code = Math.Max(0, _ledCode.SelectedIndex);
         if (_engine.Connected) _engine.SetLed(code, false);
         _ledCode.SelectedIndex = Math.Clamp(code + delta, 0, 127);
@@ -913,6 +917,7 @@ public partial class MainWindow : Window
 
     void AllLedsOff()
     {
+        if (!DebugBenchOpen) return;
         if (!_engine.Connected) { Enqueue("not connected"); return; }
         for (int i = 0; i < 128; i++) _engine.SetLed(i, false);
         Enqueue("all LEDs cleared - press a bank button to bring navigation lamps back");
@@ -920,6 +925,7 @@ public partial class MainWindow : Window
 
     void NameLed()
     {
+        if (!DebugBenchOpen) return;
         int code = Math.Max(0, _ledCode.SelectedIndex);
         string name = (_ledNameBox.Text ?? "").Trim();
         if (name.Length == 0) { Enqueue("type what lit up first"); return; }
@@ -1526,7 +1532,6 @@ public partial class MainWindow : Window
         {
             _engine.Config.ShowDebugTools = value;
             ApplyDebugTools();
-            SaveConfigQuietly();
             Enqueue(value
                 ? "debug tools on — lamp walker and LEARN/VIEW assignments at the bottom"
                 : "debug tools off");
@@ -1537,8 +1542,9 @@ public partial class MainWindow : Window
     {
         if (_debugLeds != null)
         {
-            _debugLeds.IsVisible = _engine.Config.ShowDebugTools;
-            if (!_engine.Config.ShowDebugTools) _debugLeds.IsExpanded = false;
+            bool on = _engine.Config.ShowDebugTools;
+            _debugLeds.IsVisible = on;
+            _debugLeds.IsExpanded = on;
         }
         BuildReservedTiles();
         BuildDebugAppButtons();
