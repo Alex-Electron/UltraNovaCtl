@@ -2,7 +2,7 @@
 
 Languages: **English** · [Русский](README.ru.md)
 
-![UltraNovaCtl — the UltraNova's encoders, touch sensors and panel as ordinary MIDI](img/app.png)
+<img src="img/ultranova.png" alt="Novation UltraNova" width="100%">
 
 Developed by: Alexander Lavrinovich<br>
 GitHub: https://github.com/Alex-Electron<br>
@@ -69,6 +69,12 @@ even to someone who never runs this application.
 ---
 
 ## What it does
+
+<img src="img/app.png" alt="The UltraNovaCtl window" width="100%">
+
+*Ten knobs, the wheels and pedals, and every assignable button on one page. The panel
+answers back: labels on the synth's display, rings under the knobs you touch, lamps that
+follow what each button is set to do.*
 
 **Controls it reads**
 
@@ -224,6 +230,7 @@ UltraNovaCtl/
 │   ├── PANEL-MAP.md           # every button, lamp and encoder code
 │   └── BUILD.md               # how to build it
 ├── img/
+│   ├── ultranova.png          # the instrument, background removed
 │   ├── app.png                # the window
 │   └── panel-map.svg          # the panel diagram above
 └── src/
@@ -263,6 +270,8 @@ output.
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+Product photograph of the instrument: [amazona.de](https://www.amazona.de/).
 
 Not affiliated with, endorsed by, or supported by Focusrite or Novation. *Automap*,
 *Novation* and *UltraNova* are their trademarks, used here only to say what this works with.

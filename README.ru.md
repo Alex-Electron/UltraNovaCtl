@@ -2,7 +2,7 @@
 
 Языки: [English](README.md) · **Русский**
 
-![UltraNovaCtl — энкодеры, сенсоры и панель UltraNova как обычный MIDI](img/app.png)
+<img src="img/ultranova.png" alt="Novation UltraNova" width="100%">
 
 Автор: Alexander Lavrinovich<br>
 GitHub: https://github.com/Alex-Electron<br>
@@ -70,6 +70,12 @@ flowchart LR
 ---
 
 ## Что умеет
+
+<img src="img/app.png" alt="Окно UltraNovaCtl" width="100%">
+
+*Десять ручек, колёса и педали и все назначаемые кнопки на одной странице. Панель отвечает:
+метки на дисплее синтезатора, кольца под теми ручками, которых касаешься, лампы, следующие
+за тем, что кнопке назначено.*
 
 **Что читает**
 
@@ -226,6 +232,7 @@ UltraNovaCtl/
 │   ├── PANEL-MAP.md           # коды всех кнопок, ламп и энкодеров
 │   └── BUILD.md               # как собрать
 ├── img/
+│   ├── ultranova.png          # инструмент, фон вырезан
 │   ├── app.png                # окно
 │   └── panel-map.svg          # схема панели выше
 └── src/
@@ -265,6 +272,8 @@ UltraNovaCtl/
 ## Лицензия
 
 MIT, см. [LICENSE](LICENSE).
+
+Фотография инструмента: [amazona.de](https://www.amazona.de/).
 
 Проект не связан с Focusrite и Novation, ими не одобрен и не поддерживается. *Automap*,
 *Novation* и *UltraNova* — их товарные знаки, упомянуты только чтобы указать совместимость.
