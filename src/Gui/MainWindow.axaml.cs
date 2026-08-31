@@ -1472,6 +1472,9 @@ public partial class MainWindow : Window
         lock (_lock) { if (_pending.Count < 500) _pending.Enqueue(line); }
     }
 
+    /// <summary>Put a line in the log from outside the window, e.g. from the tray menu.</summary>
+    public void Say(string line) => Enqueue(line);
+
     void Append(string line)
     {
         _lines.Add(line);

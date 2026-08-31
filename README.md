@@ -117,6 +117,9 @@ button in the window and it blinks on the panel so your hand finds it.
 **Learn** — listen on any MIDI input and take the next controller that moves, for mapping
 against a plug-in or a second instrument.
 
+**Starts with Windows** if you ask it to — a tick in the tray menu, and it comes up straight
+into the tray at login with no window in your way.
+
 **Import** — reads Novation `.automap` files, so existing maps come across.
 
 ---

@@ -280,8 +280,26 @@ imported control has.
 ## 11. Tray and window
 
 Closing the window hides it to the tray and the server keeps running. The tray menu has
-**Show**, **Reinit** and **Exit**. Clicking the tray icon toggles the window, and so does the
-`VIEW` button on the instrument.
+**Show window**, **Reinitialise MIDI**, **Start with Windows** and **Quit**. Clicking the tray
+icon toggles the window, and so does the `VIEW` button on the instrument.
+
+**Start with Windows** ticks a per-user entry under
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, pointing at this copy of the program
+with `--tray`, so at login it comes up in the tray with no window. No administrator rights are
+involved, and nothing is written anywhere else. The tick reads the registry rather than a saved
+setting, so if you clear the entry by hand — with Task Manager's Startup tab, say — the menu
+tells the truth next time you open it.
+
+Scriptable, which is what an installer would use:
+
+```powershell
+UltraNovaCtl.exe --autostart on     # exit code 0 if it took
+UltraNovaCtl.exe --autostart off
+UltraNovaCtl.exe --tray             # start hidden, as the Run key does
+```
+
+Move the program to a different folder and the old entry points at nothing. Tick it off and on
+again to repoint it.
 
 The window remembers where it was and how big it was. If the monitor it was on has since
 gone, it opens on one that exists rather than off-screen.
