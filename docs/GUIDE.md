@@ -55,7 +55,7 @@ running; the port disappears when it closes.
 
 Two ways, both on [Releases](https://github.com/Alex-Electron/UltraNovaCtl/releases):
 
-**The installer** — `UltraNovaCtl-1.0.0-setup.exe`. Installs into
+**The installer** — `UltraNovaCtl-1.1.0-setup.exe`. Installs into
 `%LOCALAPPDATA%\Programs\UltraNovaCtl` **without asking for administrator rights**, adds a
 Start menu shortcut and an entry in Installed apps, offers to start with Windows, and tells
 you whether the driver and a virtual port are there before it finishes. Per-user on purpose:

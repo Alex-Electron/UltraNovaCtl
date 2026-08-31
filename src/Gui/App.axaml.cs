@@ -42,6 +42,17 @@ public partial class App : Application
         var reinit = new NativeMenuItem("Reinitialise MIDI");
         reinit.Click += (_, _) => _window?.ReinitialiseFromTray();
 
+        var debug = new NativeMenuItem("Debug tools")
+        {
+            ToggleType = MenuItemToggleType.CheckBox,
+            IsChecked = _window?.DebugToolsVisible == true,
+        };
+        debug.Click += (_, _) =>
+        {
+            if (_window == null) return;
+            _window.DebugToolsVisible = debug.IsChecked;
+        };
+
         var autostart = new NativeMenuItem("Start with Windows")
         {
             ToggleType = MenuItemToggleType.CheckBox,   // Avalonia 12 renamed this enum
@@ -79,6 +90,7 @@ public partial class App : Application
         menu.Add(reinit);
         menu.Add(new NativeMenuItemSeparator());
         menu.Add(autostart);
+        menu.Add(debug);
         menu.Add(new NativeMenuItemSeparator());
         menu.Add(quit);
 

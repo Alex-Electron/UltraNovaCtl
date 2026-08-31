@@ -184,6 +184,12 @@ public sealed class Config
     public bool EchoButtonLeds { get; set; } = true;
 
     /// <summary>
+    /// Panel LED walker, All off, naming codes by eye — the tools used to map the
+    /// hardware. Off by default so a mapping session is not a lamp test.
+    /// </summary>
+    public bool ShowDebugTools { get; set; }
+
+    /// <summary>
     /// Lamps and buttons share numbering only up to this code. Above it the lamps run
     /// on into indicators that have no button - so a press there cannot be echoed.
     /// </summary>
@@ -241,6 +247,12 @@ public sealed class Config
 
     public static bool IsReserved(int code) => ReservedButtons.ContainsKey(code);
 
+    /// <summary>
+    /// LEARN and VIEW still do their jobs (learn mode, the window). They start silent;
+    /// the debug bench can assign MIDI to them, and then they send as well.
+    /// </summary>
+    public static bool IsAppButton(int code) => code is BtnLearn or BtnView;
+
     static readonly JsonSerializerOptions Json = new()
     {
         WriteIndented = true,
@@ -297,6 +309,8 @@ public sealed class Config
             if (c == null || c.Banks.Count == 0) return CreateDefault();
             foreach (var b in c.Banks) if (b.Pages.Count == 0) b.Pages.Add(NewPage(b.Name, 1));
             c.ApplyNames();
+            c.SilenceFactoryAppButtons();
+            c.RepairTouchModes();
             return c;
         }
         catch (Exception e)
@@ -387,11 +401,10 @@ public sealed class Config
 
         foreach (int code in KnownButtons.Keys)
         {
-            bool navigation = code is BtnUser or BtnFx or BtnInst or BtnMixer
-                              or BtnPagePrev or BtnPageNext;
+            bool silent = IsReserved(code);
             page.Buttons[code.ToString()] = new Mapping
             {
-                Send = navigation ? "none" : "cc",     // navigation buttons stay silent
+                Send = silent ? "none" : "cc",
                 Channel = 2,
                 Number = Math.Min(127, 20 + code),
                 Label = KnownButtons[code],
@@ -415,6 +428,44 @@ public sealed class Config
             };
 
         return page;
+    }
+
+    /// <summary>
+    /// v1.0.0 shipped LEARN and VIEW as CC 20 and 21 on channel 2 — the factory
+    /// numbers — while the window treated them as reserved and hid the assignment.
+    /// A mapping that is still exactly that factory row is silenced; anything the
+    /// user set in the debug bench is left alone.
+    /// </summary>
+    public void SilenceFactoryAppButtons()
+    {
+        foreach (var bank in Banks)
+        foreach (var page in bank.Pages)
+        {
+            if (page.Buttons == null) continue;
+            foreach (int code in new[] { BtnLearn, BtnView })
+            {
+                if (!page.Buttons.TryGetValue(code.ToString(), out var m)) continue;
+                if (m.Send != "cc" || m.Channel != 2 || m.Number != 20 + code) continue;
+                m.Send = "none";
+            }
+        }
+    }
+
+    /// <summary>
+    /// The Touch tab labels its first mode Momentary, but used to write "normal",
+    /// which ignores Released/Touched. Rewrite that to momentary. Toggle is left
+    /// alone; a Touch mapping cannot have been set to Normal on purpose, the list
+    /// never offered it.
+    /// </summary>
+    public void RepairTouchModes()
+    {
+        foreach (var bank in Banks)
+        foreach (var page in bank.Pages)
+        {
+            if (page.Touch == null) continue;
+            foreach (var m in page.Touch.Values)
+                if (m.Mode == "normal") m.Mode = "momentary";
+        }
     }
 
     /// <summary>

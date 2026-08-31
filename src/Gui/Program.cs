@@ -11,11 +11,17 @@ internal static class Program
     /// </summary>
     public static bool StartHidden { get; private set; }
 
+    /// <summary>Show the panel-lamp walker and the rest of the hardware bench.</summary>
+    public static bool StartWithDebugTools { get; private set; }
+
     [STAThread]
     public static void Main(string[] args)
     {
         foreach (var a in args)
+        {
             if (a is "--tray" or "-tray" or "/tray" or "--minimized") StartHidden = true;
+            if (a is "--debug" or "-debug" or "/debug") StartWithDebugTools = true;
+        }
 
         // Set the Run key and leave again, without starting a window. Handy for scripting,
         // and it is what an installer would call. Exit code 0 means it took.

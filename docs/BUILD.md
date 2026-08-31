@@ -34,13 +34,13 @@ application already sitting in `dist\UltraNovaCtl-win-x64\`, so publish first, t
 & "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" installer\UltraNovaCtl.iss
 ```
 
-Out comes `dist\UltraNovaCtl-1.0.0-setup.exe`. CI does the same on every push and keeps it
+Out comes `dist\UltraNovaCtl-1.1.0-setup.exe`. CI does the same on every push and keeps it
 as an artifact.
 
 To exercise it without clicking through the wizard:
 
 ```powershell
-.\dist\UltraNovaCtl-1.0.0-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /TASKS=autostart
+.\dist\UltraNovaCtl-1.1.0-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /TASKS=autostart
 & "$env:LOCALAPPDATA\Programs\UltraNovaCtl\unins000.exe" /VERYSILENT /SUPPRESSMSGBOXES
 ```
 

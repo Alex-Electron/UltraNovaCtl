@@ -54,7 +54,7 @@ Get-PnpDevice | Where-Object InstanceId -like "*VID_1235&PID_0011*" |
 
 Два пути, оба в [Releases](https://github.com/Alex-Electron/UltraNovaCtl/releases):
 
-**Инсталлятор** — `UltraNovaCtl-1.0.0-setup.exe`. Ставит в
+**Инсталлятор** — `UltraNovaCtl-1.1.0-setup.exe`. Ставит в
 `%LOCALAPPDATA%\Programs\UltraNovaCtl` **без запроса прав администратора**, делает ярлык в
 меню «Пуск» и запись в «Установленные приложения», предлагает автозапуск и перед завершением
 показывает, есть ли драйвер и виртуальный порт. В пользователя — намеренно: настройки лежат

@@ -94,7 +94,8 @@ public partial class MainWindow : Window
     TextBlock _pageText;
     readonly List<Button> _bankButtons = new();
     WrapPanel _encoderRow;
-    WrapPanel _buttonWrap, _analogWrap, _reservedWrap;
+    WrapPanel _buttonWrap, _analogWrap, _reservedWrap, _debugAppButtons;
+    Expander _debugLeds;
 
     public MainWindow()
     {
@@ -170,6 +171,8 @@ public partial class MainWindow : Window
         _ledAllOff = this.FindControl<Button>("LedAllOffBtn");
         _ledName = this.FindControl<Button>("LedNameBtn");
         _ledNameBox = this.FindControl<TextBox>("LedNameBox");
+        _debugLeds = this.FindControl<Expander>("DebugLedsExpander");
+        _debugAppButtons = this.FindControl<WrapPanel>("DebugAppButtonsWrap");
 
         // Same set the original offers - "CC, Note On/Off and Pitchbend" - with names
         // that cannot be mistaken for one another.
@@ -186,6 +189,8 @@ public partial class MainWindow : Window
         // the control sends: controller numbers, note names, or nothing at all.
 
         _engine.Config = Config.Load();
+        if (Program.StartWithDebugTools) _engine.Config.ShowDebugTools = true;
+        ApplyDebugTools();
         // Worth saying out loud. It is beside the executable normally, but moves to the
         // roaming profile when the install directory is read-only, and "where did my
         // mappings go" is otherwise a hard question to answer.
@@ -728,6 +733,7 @@ public partial class MainWindow : Window
         }
 
         _buttonWrap.Children.Clear();
+        _buttons.Clear();
         foreach (var kv in Config.KnownButtons.OrderBy(k => k.Key))
         {
             if (Config.IsReserved(kv.Key)) continue;      // shown separately, not mappable
@@ -740,6 +746,7 @@ public partial class MainWindow : Window
         }
 
         BuildReservedTiles();
+        BuildDebugAppButtons();
     }
 
     // ---- banks and pages ---------------------------------------------------
@@ -963,6 +970,8 @@ public partial class MainWindow : Window
         _reservedWrap.Children.Clear();
         foreach (var kv in Config.ReservedButtons.OrderBy(k => k.Key))
         {
+            // LEARN and VIEW are assignable on the debug bench; skip the "taken" card there.
+            if (Config.IsAppButton(kv.Key) && _engine.Config.ShowDebugTools) continue;
             string name = Config.KnownButtons.TryGetValue(kv.Key, out var n) ? n : $"code {kv.Key}";
 
             var title = new TextBlock
@@ -990,6 +999,36 @@ public partial class MainWindow : Window
                 Background = new SolidColorBrush(Color.Parse("#101318")),
                 BorderBrush = new SolidColorBrush(Color.Parse("#1E242C")),
             });
+        }
+    }
+
+    /// <summary>
+    /// LEARN and VIEW as real assignments, only while the debug bench is open. They keep
+    /// their ordinary jobs; a non-silent mapping here is extra MIDI on top.
+    /// </summary>
+    void BuildDebugAppButtons()
+    {
+        if (_debugAppButtons == null) return;
+        _debugAppButtons.Children.Clear();
+        foreach (int code in new[] { Config.BtnLearn, Config.BtnView })
+            _buttons.Remove(code);
+        if (!_engine.Config.ShowDebugTools) return;
+
+        var page = _engine.CurrentPage;
+        page.Buttons ??= new Dictionary<string, Mapping>();
+        foreach (int code in new[] { Config.BtnLearn, Config.BtnView })
+        {
+            if (!page.Buttons.TryGetValue(code.ToString(), out var m))
+                page.Buttons[code.ToString()] = m = new Mapping
+                {
+                    Send = "none", Channel = 2, Number = 20 + code,
+                    Label = Config.KnownButtons[code],
+                };
+            string name = Config.KnownButtons.TryGetValue(code, out var n) ? n : $"code {code}";
+            var tile = new ButtonTile(code, name, m);
+            tile.Root.PointerPressed += (_, _) => Select(tile);
+            _buttons[code] = tile;
+            _debugAppButtons.Children.Add(tile.Root);
         }
     }
 
@@ -1125,7 +1164,7 @@ public partial class MainWindow : Window
         if (_touchPick.SelectedIndex >= 0) m.Number = _touchPick.SelectedIndex;
         if (int.TryParse(_touchOff.Text, out int off)) m.From = Math.Clamp(off, 0, 127);
         if (int.TryParse(_touchOn.Text, out int on)) m.To = Math.Clamp(on, 0, 127);
-        m.Mode = _touchMode.SelectedIndex == 1 ? "toggle" : "normal";
+        m.Mode = _touchMode.SelectedIndex == 1 ? "toggle" : "momentary";
     }
 
     void WriteBackSelection()
@@ -1478,6 +1517,32 @@ public partial class MainWindow : Window
 
     /// <summary>Put a line in the log from outside the window, e.g. from the tray menu.</summary>
     public void Say(string line) => Enqueue(line);
+
+    /// <summary>Whether the lamp walker and the rest of the hardware bench are showing.</summary>
+    public bool DebugToolsVisible
+    {
+        get => _engine.Config.ShowDebugTools;
+        set
+        {
+            _engine.Config.ShowDebugTools = value;
+            ApplyDebugTools();
+            SaveConfigQuietly();
+            Enqueue(value
+                ? "debug tools on — lamp walker and LEARN/VIEW assignments at the bottom"
+                : "debug tools off");
+        }
+    }
+
+    void ApplyDebugTools()
+    {
+        if (_debugLeds != null)
+        {
+            _debugLeds.IsVisible = _engine.Config.ShowDebugTools;
+            if (!_engine.Config.ShowDebugTools) _debugLeds.IsExpanded = false;
+        }
+        BuildReservedTiles();
+        BuildDebugAppButtons();
+    }
 
     void Append(string line)
     {
