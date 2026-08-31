@@ -459,12 +459,32 @@ public sealed class AutomapEngine : IDisposable
         LightBanks();
         RefreshRings();
 
-        // And once more a moment later. The synth does its blanking on its own schedule,
-        // and a clear that lands after this method has finished would otherwise leave the
-        // panel dark until something else happened to repaint it.
+        SettlePanel();
+    }
+
+    /// <summary>
+    /// Hold the panel through the hand-over.
+    ///
+    /// The synth blanks its lamps when it gives control to a server, but not at a moment we
+    /// are told about: it lands after the reply, after the register writes, and by the look
+    /// of it after the first display write too. One late re-assert leaves the lamp dark for
+    /// the couple of hundred milliseconds in between, which reads as a blink.
+    ///
+    /// Since the instrument never says when it has finished, the honest answer is to keep
+    /// asserting for a moment rather than to guess. Two bytes every 40 ms for half a second
+    /// is nothing on the wire, and it shortens any gap below what the eye reports as a
+    /// flash. The heavier bank and ring refresh runs only at the end.
+    /// </summary>
+    void SettlePanel()
+    {
         var t = new Thread(() =>
         {
-            Thread.Sleep(250);
+            for (int i = 0; i < 12; i++)
+            {
+                if (_stop || !AutomapActive) return;
+                LightMode();
+                Thread.Sleep(40);
+            }
             if (_stop || !AutomapActive) return;
             LightMode();
             LightBanks();
