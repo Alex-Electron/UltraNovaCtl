@@ -46,10 +46,10 @@ DAW. И обратно тоже: ваши собственные метки и �
 
 ```mermaid
 flowchart LR
-    S["<b>UltraNova</b><br/>энкодеры · касания · панель"]
-    A["<b>UltraNovaCtl</b><br/>читает панель<br/>рисует дисплей и лампы"]
-    V["<b>loopMIDI</b><br/>виртуальный порт"]
-    D["<b>Ваша DAW</b><br/>Ableton, Bitwig, Reaper…"]
+    S["UltraNova<br/>энкодеры · касания · панель"]
+    A["UltraNovaCtl<br/>читает панель<br/>рисует дисплей и лампы"]
+    V["loopMIDI<br/>виртуальный порт"]
+    D["Ваша DAW<br/>Ableton, Bitwig, Reaper…"]
 
     S -- "IN 0x85 · сырой MIDI, приватный диалект" --> A
     A -- "OUT 0x05 · текст дисплея, лампы" --> S
@@ -155,11 +155,11 @@ Signed Bit, Signed Bit 2, Binary Offset). Для кнопок: Momentary, Normal
 
 ```mermaid
 flowchart TB
-    U["<b>UltraNova</b> · VID 0x1235 PID 0x0011<br/><i>четыре интерфейса, все вендорные</i>"]
-    U --> I0["<b>IF0</b> · изохронный 0x01 / 0x82<br/>аудио"]
-    U --> I1["<b>IF1</b> · 0x03 / 0x83<br/>MIDI-порт 1 — ноты, колёса, афтертач"]
-    U --> I2["<b>IF2</b> · 0x04 / 0x84<br/>MIDI-порт 2 — молчит во всех захватах"]
-    U --> I3["<b>IF3</b> · 0x05 / 0x85<br/><b>Automap</b> — энкодеры, касания, кнопки, дисплей, лампы"]
+    U["UltraNova · VID 0x1235 PID 0x0011<br/>четыре интерфейса, все вендорные"]
+    U --> I0["IF0 · изохронный 0x01 / 0x82<br/>аудио"]
+    U --> I1["IF1 · 0x03 / 0x83<br/>MIDI-порт 1 — ноты, колёса, афтертач"]
+    U --> I2["IF2 · 0x04 / 0x84<br/>MIDI-порт 2 — молчит во всех захватах"]
+    U --> I3["IF3 · 0x05 / 0x85<br/>Automap — энкодеры, касания, кнопки, дисплей, лампы"]
 
     classDef head fill:#1e2128,stroke:#3a4050,color:#e8eaf0
     classDef dim  fill:#1e2128,stroke:#3a4050,color:#98a0b0

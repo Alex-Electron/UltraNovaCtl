@@ -45,10 +45,10 @@ display and lamps, and sends whatever you assign to a normal MIDI port:
 
 ```mermaid
 flowchart LR
-    S["<b>UltraNova</b><br/>encoders · touch · panel"]
-    A["<b>UltraNovaCtl</b><br/>reads the panel<br/>paints display and lamps"]
-    V["<b>loopMIDI</b><br/>virtual port"]
-    D["<b>Your DAW</b><br/>Ableton, Bitwig, Reaper…"]
+    S["UltraNova<br/>encoders · touch · panel"]
+    A["UltraNovaCtl<br/>reads the panel<br/>paints display and lamps"]
+    V["loopMIDI<br/>virtual port"]
+    D["Your DAW<br/>Ableton, Bitwig, Reaper…"]
 
     S -- "IN 0x85 · raw MIDI, private dialect" --> A
     A -- "OUT 0x05 · display text, lamps" --> S
@@ -153,11 +153,11 @@ else knows how to talk to.
 
 ```mermaid
 flowchart TB
-    U["<b>UltraNova</b> · VID 0x1235 PID 0x0011<br/><i>four interfaces, all vendor-specific</i>"]
-    U --> I0["<b>IF0</b> · isochronous 0x01 / 0x82<br/>audio"]
-    U --> I1["<b>IF1</b> · 0x03 / 0x83<br/>MIDI port 1 — notes, wheels, aftertouch"]
-    U --> I2["<b>IF2</b> · 0x04 / 0x84<br/>MIDI port 2 — silent in every capture"]
-    U --> I3["<b>IF3</b> · 0x05 / 0x85<br/><b>Automap</b> — encoders, touch, buttons, display, lamps"]
+    U["UltraNova · VID 0x1235 PID 0x0011<br/>four interfaces, all vendor-specific"]
+    U --> I0["IF0 · isochronous 0x01 / 0x82<br/>audio"]
+    U --> I1["IF1 · 0x03 / 0x83<br/>MIDI port 1 — notes, wheels, aftertouch"]
+    U --> I2["IF2 · 0x04 / 0x84<br/>MIDI port 2 — silent in every capture"]
+    U --> I3["IF3 · 0x05 / 0x85<br/>Automap — encoders, touch, buttons, display, lamps"]
 
     classDef head fill:#1e2128,stroke:#3a4050,color:#e8eaf0
     classDef dim  fill:#1e2128,stroke:#3a4050,color:#98a0b0
