@@ -42,6 +42,50 @@ public static class MidiNames
     public static string CcShort(int n) => CcLabel(n).TrimEnd();
     public static string NoteShort(int n) => NoteLabel(n).TrimEnd();
 
+    /// <summary>One log line. Long dumps keep the head and the closing F7.</summary>
+    public static string SysEx(byte[] sx)
+    {
+        if (sx == null || sx.Length == 0) return "sysex empty";
+        string tag = "sysex";
+        if (sx.Length >= 6 && sx[1] == 0x7F && sx[3] == 0x06)
+            tag = "sysex " + MmcName(sx[4]);
+        const int fit = 24;
+        if (sx.Length <= fit) return $"{tag} ({sx.Length}): {Hex(sx, 0, sx.Length)}";
+        return $"{tag} ({sx.Length}): {Hex(sx, 0, 16)} … {Hex(sx, sx.Length - 1, 1)}";
+    }
+
+    static string MmcName(byte cmd) => cmd switch
+    {
+        0x01 => "MMC stop",
+        0x02 => "MMC play",
+        0x04 => "MMC ffwd",
+        0x05 => "MMC rewind",
+        0x06 => "MMC record",
+        0x07 => "MMC rec exit",
+        0x09 => "MMC pause",
+        0x44 => "MMC locate",
+        _ => $"MMC {cmd:X2}",
+    };
+
+    public static string Realtime(byte status) => status switch
+    {
+        0xF8 => "clock",
+        0xFA => "Start",
+        0xFB => "Continue",
+        0xFC => "Stop",
+        0xF6 => "Tune Request",
+        0xFE => "active sensing",
+        0xFF => "reset",
+        _ => $"sys {status:X2}",
+    };
+
+    static string Hex(byte[] sx, int off, int n)
+    {
+        var parts = new string[n];
+        for (int i = 0; i < n; i++) parts[i] = sx[off + i].ToString("X2");
+        return string.Join(" ", parts);
+    }
+
     /// <summary>Assigned controller names from the MIDI 1.0 specification.</summary>
     public static readonly Dictionary<int, string> Cc = new()
     {

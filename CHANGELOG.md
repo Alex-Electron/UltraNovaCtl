@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.2.0 — 2026-09-01
+
+Functional 1.x release: pickup, per-page memory, and a quieter window.
+
+- **Window title** is Automap on the synth: `connected` / `not connected`. The USB host
+  stays up on its own; a small **USB** button remains if you need to close it.
+- One toolbar row. Save / Export / Import stay on the right so Import is never off-screen.
+- A second copy raises the existing window. The MIDI port is not taken twice.
+- **Pickup** on assigned wheels and pedals after a bank or page change: nothing is sent
+  until the physical position matches the last value sent on that page. Optional per
+  control (Range tab). An amber tick marks the catch point (`2 → 100`). No assignment,
+  nothing to remember. Sustain is a switch and is not held.
+- Encoder values are remembered per page. `Clear` strips every assignment on the bank;
+  `Revert` restores the current page to the factory map.
+- Expression (CC 11), sustain (CC 64) and aftertouch send by default. Mod wheel and pitch
+  bend stay disabled here — they already leave the UltraNova's own MIDI port.
+- Sustain is a footswitch (Momentary / Normal / Toggle / Step, including keystroke and
+  transport). Expression stays a continuous pedal.
+- USER / FX / INST / MIXER / PAGE sit with LEARN and VIEW on the Debug tools bench. They
+  still change bank and page; assign MIDI and they send that too.
+- Button 39 is labelled **PATCH KNOB PUSH**. LEARN's lamp follows learn arming.
+- New send types: NRPN, RPN, CC 14-bit, Program Change, Aftertouch.
+- Log: SysEx, NRPN/RPN, bank select, program change, Start/Stop/Continue. MIDI clock is
+  summarised as BPM; we do not generate clock.
+- Debug **Demo**: one film; `Alex.Electron` stays centred. Never more than 13 lamps at
+  once (14 sags the analogue rail). Automap entry does not blink PAGE BACK/NEXT.
+- Touch tab redraws when you pick Transport or Keystroke.
+
 ## 1.1.1 — 2026-08-31
 
 The lamp walker follows the same rules as LEARN / VIEW assignments.

@@ -22,6 +22,9 @@ public partial class MainWindow : Window
 
     readonly AutomapEngine _engine = new();
     readonly MidiIn _midiIn = new();
+    readonly NrpnAssembler _learnNrpn = new();
+    readonly NrpnAssembler _portNrpn = new();
+    MidiClockMeter _learnClock;
     readonly EncoderTile[] _encoders = new EncoderTile[AutomapEngine.EncoderCount];
     readonly Dictionary<int, ButtonTile> _buttons = new();
     readonly Dictionary<int, AnalogTile> _analogs = new();
@@ -36,6 +39,8 @@ public partial class MainWindow : Window
     readonly HashSet<int> _btnDirty = new();
     readonly Dictionary<int, int> _analogValue = new();
     readonly HashSet<int> _analogDirty = new();
+    readonly HashSet<int> _analogPickup = new();
+    readonly Dictionary<int, int> _analogCatch = new();
     readonly Queue<string> _pending = new();
     readonly List<string> _lines = new();
     readonly object _lock = new();
@@ -68,33 +73,33 @@ public partial class MainWindow : Window
     object _selected;                      // EncoderTile or ButtonTile
     bool _loadingSelection;                // suppress write-back while filling the fields
 
-    Button _connect, _save, _reset, _rescan, _export, _import, _reinit, _test;
+    Button _connect, _save, _reset, _clear, _revert, _rescan, _export, _import, _reinit, _test;
     ComboBox _learn;
     Border _learnBadge;
     ComboBox _portBox, _inPortBox, _selSend;
     TextBox _selLabel, _selNumber, _selFrom, _selTo, _selPoints, _selKey;
     ComboBox _selPick, _selMode, _selChannel, _selTransport;
-    ComboBox _touchSend, _touchChannel, _touchPick, _touchMode;
-    TextBox _touchOff, _touchOn;
+    ComboBox _touchSend, _touchChannel, _touchPick, _touchMode, _touchTransport;
+    TextBox _touchOff, _touchOn, _touchKey, _touchNumber;
     TextBlock _touchNumberLabel, _fromLabel, _toLabel, _pointsLabel, _stepSizeText;
     TabItem _touchTab;
     TextBlock _selBinding, _selValue, _numberLabel;
-    TextBlock _status, _selName;
+    TextBlock _selName;
     SelectableTextBlock _logText;
     Button _logCopy, _logSave, _logClear;
-    CheckBox _logFollow, _echoLeds;
+    CheckBox _logFollow, _echoLeds, _selPickup;
     ComboBox _kbdCh, _octave, _transpose, _after;
     TextBlock _mode;
     ScrollViewer _logScroll;
     StackPanel _bankTabs;
     Button _pagePrev, _pageNext, _pageAdd, _pageDel;
-    Button _ledOn, _ledOff, _ledPrev, _ledNext, _ledAllOff, _ledName;
+    Button _ledOn, _ledOff, _ledPrev, _ledNext, _ledAllOff, _ledName, _demo;
     ComboBox _ledCode;
     TextBox _ledNameBox;
     TextBlock _pageText;
     readonly List<Button> _bankButtons = new();
     WrapPanel _encoderRow;
-    WrapPanel _buttonWrap, _analogWrap, _reservedWrap, _debugAppButtons;
+    WrapPanel _buttonWrap, _analogWrap, _debugAppButtons;
     Expander _debugLeds;
 
     public MainWindow()
@@ -104,6 +109,8 @@ public partial class MainWindow : Window
         _connect = this.FindControl<Button>("ConnectBtn");
         _save = this.FindControl<Button>("SaveBtn");
         _reset = this.FindControl<Button>("ResetBtn");
+        _clear = this.FindControl<Button>("ClearBtn");
+        _revert = this.FindControl<Button>("RevertBtn");
         _rescan = this.FindControl<Button>("RescanBtn");
         _reinit = this.FindControl<Button>("ReinitBtn");
         _test = this.FindControl<Button>("TestBtn");
@@ -113,18 +120,17 @@ public partial class MainWindow : Window
         _learnBadge = this.FindControl<Border>("LearnBadge");
         _portBox = this.FindControl<ComboBox>("PortBox");
         _inPortBox = this.FindControl<ComboBox>("InPortBox");
-        _status = this.FindControl<TextBlock>("StatusText");
         _logText = this.FindControl<SelectableTextBlock>("LogText");
         _logCopy = this.FindControl<Button>("LogCopyBtn");
         _logSave = this.FindControl<Button>("LogSaveBtn");
         _logClear = this.FindControl<Button>("LogClearBtn");
         _logFollow = this.FindControl<CheckBox>("LogFollowBox");
         _echoLeds = this.FindControl<CheckBox>("EchoLedsBox");
+        _selPickup = this.FindControl<CheckBox>("SelPickupBox");
         _logScroll = this.FindControl<ScrollViewer>("LogScroll");
         _encoderRow = this.FindControl<WrapPanel>("EncoderRow");
         _buttonWrap = this.FindControl<WrapPanel>("ButtonWrap");
         _analogWrap = this.FindControl<WrapPanel>("AnalogWrap");
-        _reservedWrap = this.FindControl<WrapPanel>("ReservedWrap");
         _selName = this.FindControl<TextBlock>("SelName");
         _selBinding = this.FindControl<TextBlock>("SelBinding");
         _selValue = this.FindControl<TextBlock>("SelValue");
@@ -144,6 +150,9 @@ public partial class MainWindow : Window
         _touchSend = this.FindControl<ComboBox>("TouchSend");
         _touchChannel = this.FindControl<ComboBox>("TouchChannel");
         _touchPick = this.FindControl<ComboBox>("TouchPick");
+        _touchTransport = this.FindControl<ComboBox>("TouchTransport");
+        _touchKey = this.FindControl<TextBox>("TouchKey");
+        _touchNumber = this.FindControl<TextBox>("TouchNumber");
         _touchNumberLabel = this.FindControl<TextBlock>("TouchNumberLabel");
         _touchOff = this.FindControl<TextBox>("TouchOff");
         _touchOn = this.FindControl<TextBox>("TouchOn");
@@ -169,6 +178,7 @@ public partial class MainWindow : Window
         _ledPrev = this.FindControl<Button>("LedPrevBtn");
         _ledNext = this.FindControl<Button>("LedNextBtn");
         _ledAllOff = this.FindControl<Button>("LedAllOffBtn");
+        _demo = this.FindControl<Button>("DemoBtn");
         _ledName = this.FindControl<Button>("LedNameBtn");
         _ledNameBox = this.FindControl<TextBox>("LedNameBox");
         _debugLeds = this.FindControl<Expander>("DebugLedsExpander");
@@ -184,6 +194,7 @@ public partial class MainWindow : Window
         _selTransport.ItemsSource = Transport.All.Select(c => c.Label).ToList();
         _touchSend.ItemsSource = SendKinds.Select(k => k.label).ToList();
         _touchChannel.ItemsSource = Enumerable.Range(1, 16).Select(i => i.ToString()).ToList();
+        _touchTransport.ItemsSource = Transport.All.Select(c => c.Label).ToList();
         _touchMode.ItemsSource = new[] { "Momentary", "Toggle" };
         // The list is filled by ApplySendKind, because what you pick depends on what
         // the control sends: controller numbers, note names, or nothing at all.
@@ -203,6 +214,8 @@ public partial class MainWindow : Window
         _connect.Click += (_, _) => ToggleConnection();
         _save.Click += (_, _) => SaveConfig();
         _reset.Click += (_, _) => ZeroValues();
+        _clear.Click += (_, _) => ClearBankMap();
+        _revert.Click += (_, _) => RevertPageMap();
         _rescan.Click += (_, _) => RescanMidi();
         _reinit.Click += (_, _) => Reinitialise();
         _test.Click += (_, _) => _engine.SendTest();
@@ -222,6 +235,7 @@ public partial class MainWindow : Window
         {
             _learnMode = _learn.SelectedIndex;
             _learnBadge.IsVisible = _learnMode > 0;
+            _engine.SetLearnArmed(_learnMode > 0);
         };
         _pagePrev.Click += (_, _) => { _engine.SetPage(_engine.PageIndex - 1); ReloadPage(); };
         _pageNext.Click += (_, _) => { _engine.SetPage(_engine.PageIndex + 1); ReloadPage(); };
@@ -232,6 +246,8 @@ public partial class MainWindow : Window
         _ledPrev.Click += (_, _) => StepLed(-1);
         _ledNext.Click += (_, _) => StepLed(1);
         _ledAllOff.Click += (_, _) => AllLedsOff();
+        _engine.DemoConcurrent = PanelLamps.MaxAtOnce;
+        _demo.Click += (_, _) => ToggleDemo();
         _ledName.Click += (_, _) => NameLed();
         BuildLedBench();
 
@@ -254,6 +270,7 @@ public partial class MainWindow : Window
         _selTo.LostFocus += (_, _) => WriteBackSelection();
         _selMode.SelectionChanged += (_, _) => { WriteBackSelection(); ShowStepFields(); };
         _selPoints.LostFocus += (_, _) => WriteBackSelection();
+        _selPickup.IsCheckedChanged += (_, _) => WriteBackSelection();
 
         // Capture the combination as it is pressed, rather than making anyone type
         // "Ctrl+Shift+Z" by hand.
@@ -277,9 +294,25 @@ public partial class MainWindow : Window
         _touchSend.SelectionChanged += (_, _) => { ApplyTouchKind(); WriteBackTouch(); };
         _touchChannel.SelectionChanged += (_, _) => WriteBackTouch();
         _touchPick.SelectionChanged += (_, _) => WriteBackTouch();
+        _touchTransport.SelectionChanged += (_, _) => WriteBackTouch();
+        _touchNumber.LostFocus += (_, _) => WriteBackTouch();
         _touchOff.LostFocus += (_, _) => WriteBackTouch();
         _touchOn.LostFocus += (_, _) => WriteBackTouch();
         _touchMode.SelectionChanged += (_, _) => WriteBackTouch();
+        _touchKey.KeyDown += (_, e) =>
+        {
+            e.Handled = true;
+            if (e.Key is Key.LeftCtrl or Key.RightCtrl or Key.LeftShift or Key.RightShift
+                or Key.LeftAlt or Key.RightAlt or Key.LWin or Key.RWin) return;
+            var parts = new List<string>();
+            if (e.KeyModifiers.HasFlag(KeyModifiers.Control)) parts.Add("Ctrl");
+            if (e.KeyModifiers.HasFlag(KeyModifiers.Shift)) parts.Add("Shift");
+            if (e.KeyModifiers.HasFlag(KeyModifiers.Alt)) parts.Add("Alt");
+            if (e.KeyModifiers.HasFlag(KeyModifiers.Meta)) parts.Add("Win");
+            parts.Add(e.Key.ToString());
+            _touchKey.Text = string.Join("+", parts);
+            WriteBackTouch();
+        };
         _selPick.SelectionChanged += (_, _) =>
         {
             if (_loadingSelection || _selPick.SelectedIndex < 0) return;
@@ -288,6 +321,7 @@ public partial class MainWindow : Window
         };
 
         _engine.Log += (_, s) => Enqueue(s);
+        _learnClock = new MidiClockMeter(Enqueue, "in: ");
         _engine.EncoderMoved += (_, e) => OnEncoder(e);
         _engine.EncoderTouched += (_, e) => OnTouch(e);
         _engine.ButtonChanged += (_, e) => OnButton(e);
@@ -297,16 +331,43 @@ public partial class MainWindow : Window
             Post(() =>
             {
                 _mode.Text = on ? "AUTOMAP" : "SYNTH";
+                RefreshHostChrome();
                 if (on) SyncViewLed();
             });
         };
         _engine.KeyboardState += (_, e) => Post(() => ShowKeyboardState(e.Register, e.Value));
         // Notes, wheels and aftertouch come straight off the synth's own MIDI port.
-        _engine.PortMidi += (_, e) => ShowIncomingOnFader(e);
+        _engine.PortMidi += (_, e) =>
+        {
+            ShowIncomingOnFader(e);
+            bool noisy = e.IsNote || e.IsPitchBend || e.Kind == 0xD0
+                         || (e.IsCc && e.Data1 is 1 or 11 or 64);
+            if (noisy && !_engine.Config.ShowDebugTools) return;
+            string extra = e.IsCc ? _portNrpn.Annotate(e.Channel, e.Data1, e.Data2) : "";
+            Enqueue("midi: " + e.Describe() + extra);
+        };
         _engine.AnalogMoved += (_, e) =>
         {
-            lock (_lock) { _analogValue[e.Code] = e.Value; _analogDirty.Add(e.Code); }
-            Enqueue($"analog: control {e.Code} = {e.Value}");
+            lock (_lock)
+            {
+                _analogValue[e.Code] = e.Value;
+                if (e.Pickup)
+                {
+                    _analogPickup.Add(e.Code);
+                    _analogCatch[e.Code] = e.Catch;
+                }
+                else
+                {
+                    _analogPickup.Remove(e.Code);
+                    _analogCatch.Remove(e.Code);
+                }
+                _analogDirty.Add(e.Code);
+            }
+            // Expression (and the wheels) repeat every tick; the tiles already show it.
+            // The log only names them on the debug bench, same as the lamp walker.
+            if (_engine.Config.ShowDebugTools)
+                Enqueue($"analog: {Config.AnalogName(e.Code)} = {e.Value}"
+                        + (e.Pickup ? $" (pickup → {e.Catch})" : ""));
             if (LearnActive)
                 Post(() => { if (_analogs.TryGetValue(e.Code, out var t)) { Select(t); LearnConsumed(); } });
         };
@@ -353,8 +414,24 @@ public partial class MainWindow : Window
             TryAutoConnect();
             _retry.Start();
         }
-        else Append("Ready. Press Connect, then AUTOMAP on the synth.");
+        else Append("Ready. Open USB from the small button on the right, then AUTOMAP on the synth.");
+        RefreshHostChrome();
         FlushLog();
+    }
+
+    /// <summary>
+    /// Title is Automap on the synth, not the USB host. The host stays up on its own.
+    /// </summary>
+    void RefreshHostChrome()
+    {
+        Title = "UltraNovaCtl " + Program.AppVersion
+              + "  —  "
+              + (_engine.AutomapActive ? "connected" : "not connected");
+        if (_connect == null) return;
+        _connect.Opacity = _engine.Connected ? 0.55 : 1;
+        ToolTip.SetTip(_connect, _engine.Connected
+            ? "USB host is open. The app keeps it that way. Click to close. The title shows Automap, not USB."
+            : "USB host is closed. Click to open, or wait — it retries on its own.");
     }
 
     /// <summary>
@@ -418,8 +495,13 @@ public partial class MainWindow : Window
     static readonly (string value, string label)[] SendKinds =
     {
         ("cc",        "Control Change"),
+        ("cc14",      "CC 14-bit"),
+        ("nrpn",      "NRPN"),
+        ("rpn",       "RPN"),
         ("note",      "Note On/Off"),
         ("pitchbend", "Pitch Bend"),
+        ("aftertouch","Aftertouch"),
+        ("program",   "Program Change"),
         ("key",       "Keystroke"),
         ("transport", "Transport"),
         ("none",      "Disabled"),
@@ -446,8 +528,12 @@ public partial class MainWindow : Window
         ("step",      "Step"),
     };
 
+    bool SelectionIsSwitch =>
+        _selected is ButtonTile
+        || (_selected is AnalogTile analog && analog.IsSwitch);
+
     (string value, string label)[] ModeKinds =>
-        _selected is ButtonTile ? SwitchModes : ContinuousModes;
+        SelectionIsSwitch ? SwitchModes : ContinuousModes;
 
     int ModeIndex(string value)
     {
@@ -467,7 +553,9 @@ public partial class MainWindow : Window
         bool disabled = kind == "none";
         bool isKey = kind == "key";
         bool isTransport = kind == "transport";
-        bool usesNumber = kind is "cc" or "note";
+        bool usesPick = kind is "cc" or "note" or "cc14";
+        bool usesTypedNumber = kind is "nrpn" or "rpn";
+        bool usesNumber = usesPick || usesTypedNumber;
 
         _selKey.IsVisible = isKey;
         _selTransport.IsVisible = isTransport;
@@ -479,10 +567,13 @@ public partial class MainWindow : Window
         _numberLabel.Text = kind switch
         {
             "note" => "Note", "key" => "Keys", "transport" => "Command",
-            "pitchbend" => "", _ => "CC",
+            "nrpn" => "NRPN", "rpn" => "RPN", "cc14" => "CC",
+            "program" => "", "pitchbend" => "", "aftertouch" => "", _ => "CC",
         };
         _numberLabel.IsVisible = usesNumber || isKey || isTransport;
-        _selPick.IsVisible = usesNumber;
+        _selPick.IsVisible = usesPick;
+        _selNumber.IsVisible = usesTypedNumber;
+        _selNumber.Width = usesTypedNumber ? 88 : 0;
         _selChannel.IsEnabled = !disabled && !isKey && !isTransport;
 
         bool loading = _loadingSelection;
@@ -491,10 +582,11 @@ public partial class MainWindow : Window
         {
             "note" => Enumerable.Range(0, 128).Select(NoteName).ToList(),
             "cc" => Enumerable.Range(0, 128).Select(MidiNames.CcLabel).ToList(),
+            "cc14" => Enumerable.Range(0, 32).Select(MidiNames.CcLabel).ToList(),
             _ => new List<string>(),
         };
-        if (usesNumber && int.TryParse(_selNumber.Text, out int cur) && cur is >= 0 and < 128)
-            _selPick.SelectedIndex = cur;
+        if (usesPick && int.TryParse(_selNumber.Text, out int cur) && cur >= 0)
+            _selPick.SelectedIndex = kind == "cc14" ? Math.Clamp(cur, 0, 31) : Math.Clamp(cur, 0, 127);
         else
             _selPick.SelectedIndex = -1;
         _loadingSelection = loading;
@@ -629,7 +721,13 @@ public partial class MainWindow : Window
     /// </summary>
     void OnMidiIn(MidiInEventArgs e)
     {
-        Enqueue("in: " + e.Describe());
+        if (e.Status >= 0xF8 || e.Status == 0xF6)
+        {
+            _learnClock.Realtime(e.Status);
+            return;
+        }
+        string extra = e.IsCc ? _learnNrpn.Annotate(e.Channel, e.Data1, e.Data2) : "";
+        Enqueue("in: " + e.Describe() + extra);
         ShowIncomingOnFader(e);
         if (!LearnActive || _selected == null) return;
         if (!e.IsCc && !e.IsNote && !e.IsPitchBend) return;
@@ -745,7 +843,6 @@ public partial class MainWindow : Window
             _buttonWrap.Children.Add(tile.Root);
         }
 
-        BuildReservedTiles();
         BuildDebugAppButtons();
     }
 
@@ -807,6 +904,32 @@ public partial class MainWindow : Window
         _selected = null;
         _engine.HighlightedEncoder = -1;
         BuildTiles();
+        lock (_lock)
+        {
+            for (int i = 0; i < AutomapEngine.EncoderCount; i++)
+            {
+                _val[i] = _engine.ValueOf(i);
+                _encDirty[i] = true;
+                _encoders[i]?.Set(_val[i], false);
+            }
+            _analogPickup.Clear();
+            _analogCatch.Clear();
+            foreach (var kv in _analogs)
+            {
+                int code = kv.Key;
+                int phys = _engine.AnalogPhysical(code);
+                if (phys >= 0) _analogValue[code] = phys;
+                bool pk = _engine.AnalogPickupState(code, out int catchAt);
+                if (pk)
+                {
+                    _analogPickup.Add(code);
+                    _analogCatch[code] = catchAt;
+                }
+                kv.Value.Set(
+                    _analogValue.TryGetValue(code, out int v) ? v : 0,
+                    pk, pk ? catchAt : -1);
+            }
+        }
         UpdateSelectionUi();
         ClearSelectionFields();
     }
@@ -856,6 +979,11 @@ public partial class MainWindow : Window
             "transport" => Transport.LabelOf(m.TransportCommand),
             "note" => MidiNames.NoteShort(m.Number),
             "pitchbend" => "Pitch Bend",
+            "aftertouch" => "Aftertouch",
+            "program" => "Program Change",
+            "nrpn" => $"NRPN {m.Number}",
+            "rpn" => $"RPN {m.Number}",
+            "cc14" => $"CC {m.Number:000}+{m.Number + 32:000} 14-bit",
             _ => MidiNames.CcShort(m.Number),
         };
         string range = m.From == 0 && m.To == 127 ? "" : $" · {m.From}–{m.To}";
@@ -918,9 +1046,17 @@ public partial class MainWindow : Window
     void AllLedsOff()
     {
         if (!DebugBenchOpen) return;
+        if (_engine.DemoRunning) _engine.ToggleDemo();
         if (!_engine.Connected) { Enqueue("not connected"); return; }
         for (int i = 0; i < 128; i++) _engine.SetLed(i, false);
         Enqueue("all LEDs cleared - press a bank button to bring navigation lamps back");
+    }
+
+    void ToggleDemo()
+    {
+        if (!DebugBenchOpen) return;
+        _engine.ToggleDemo();
+        _demo.Content = _engine.DemoRunning ? "Stop" : "Demo";
     }
 
     void NameLed()
@@ -964,71 +1100,31 @@ public partial class MainWindow : Window
         _selMode.SelectedIndex = -1;
         _selBinding.Text = "click a knob or button";
         _selValue.Text = "";
+        _selPickup.IsVisible = false;
         _loadingSelection = false;
     }
 
     /// <summary>
-    /// The buttons the application keeps for itself, shown so it is clear they are
-    /// taken and by what - rather than simply missing from the list.
-    /// </summary>
-    void BuildReservedTiles()
-    {
-        _reservedWrap.Children.Clear();
-        foreach (var kv in Config.ReservedButtons.OrderBy(k => k.Key))
-        {
-            // LEARN and VIEW are assignable on the debug bench; skip the "taken" card there.
-            if (Config.IsAppButton(kv.Key) && _engine.Config.ShowDebugTools) continue;
-            string name = Config.KnownButtons.TryGetValue(kv.Key, out var n) ? n : $"code {kv.Key}";
-
-            var title = new TextBlock
-            {
-                Text = name, FontSize = 11,
-                Foreground = new SolidColorBrush(Color.Parse("#9AA4B4")),
-            };
-            var what = new TextBlock
-            {
-                Text = kv.Value, FontSize = 10,
-                Foreground = new SolidColorBrush(Color.Parse("#5E6675")),
-                TextWrapping = TextWrapping.Wrap,
-            };
-            var stack = new StackPanel { Spacing = 1, Width = 132 };
-            stack.Children.Add(title);
-            stack.Children.Add(what);
-
-            _reservedWrap.Children.Add(new Border
-            {
-                Child = stack,
-                Padding = new Thickness(8, 5),
-                Margin = new Thickness(3),
-                CornerRadius = new CornerRadius(4),
-                BorderThickness = new Thickness(1),
-                Background = new SolidColorBrush(Color.Parse("#101318")),
-                BorderBrush = new SolidColorBrush(Color.Parse("#1E242C")),
-            });
-        }
-    }
-
-    /// <summary>
-    /// LEARN and VIEW as real assignments, only while the debug bench is open. They keep
-    /// their ordinary jobs; a non-silent mapping here is extra MIDI on top.
+    /// LEARN, VIEW, banks and pages as real assignments, only on the debug bench. They
+    /// keep their ordinary jobs; a non-silent mapping here is extra MIDI on top.
     /// </summary>
     void BuildDebugAppButtons()
     {
         if (_debugAppButtons == null) return;
         _debugAppButtons.Children.Clear();
-        foreach (int code in new[] { Config.BtnLearn, Config.BtnView })
+        foreach (int code in Config.ReservedButtons.Keys)
             _buttons.Remove(code);
         if (!_engine.Config.ShowDebugTools) return;
 
         var page = _engine.CurrentPage;
         page.Buttons ??= new Dictionary<string, Mapping>();
-        foreach (int code in new[] { Config.BtnLearn, Config.BtnView })
+        foreach (int code in Config.ReservedButtons.Keys.OrderBy(k => k))
         {
             if (!page.Buttons.TryGetValue(code.ToString(), out var m))
                 page.Buttons[code.ToString()] = m = new Mapping
                 {
                     Send = "none", Channel = 2, Number = 20 + code,
-                    Label = Config.KnownButtons[code],
+                    Label = Config.KnownButtons.TryGetValue(code, out var lab) ? lab : "",
                 };
             string name = Config.KnownButtons.TryGetValue(code, out var n) ? n : $"code {code}";
             var tile = new ButtonTile(code, name, m);
@@ -1086,7 +1182,7 @@ public partial class MainWindow : Window
         _selKey.Text = m.KeyGesture;
         _selTransport.SelectedIndex = Array.FindIndex(Transport.All, c => c.Id == m.TransportCommand);
         _selChannel.SelectedIndex = Math.Clamp(m.Channel, 1, 16) - 1;
-        bool isSwitch = _selected is ButtonTile;
+        bool isSwitch = SelectionIsSwitch;
         _fromLabel.Text = isSwitch ? "Release" : "From";
         _toLabel.Text = isSwitch ? "Press" : "To";
         _selMode.ItemsSource = ModeKinds.Select(k => k.label).ToList();
@@ -1094,6 +1190,9 @@ public partial class MainWindow : Window
         _selTo.Text = m.To.ToString();
         _selMode.SelectedIndex = ModeIndex(m.Mode);
         _selPoints.Text = m.Points.ToString();
+        bool analogPot = tile is AnalogTile analogPotTile && !analogPotTile.IsSwitch;
+        _selPickup.IsVisible = analogPot;
+        _selPickup.IsChecked = analogPot && m.PickupEnabled;
         _loadingSelection = false;
         ApplySendKind();
         LoadTouch();
@@ -1117,12 +1216,30 @@ public partial class MainWindow : Window
     {
         int si = _touchSend.SelectedIndex;
         string kind = si >= 0 && si < SendKinds.Length ? SendKinds[si].value : "cc";
-        bool usesNumber = kind is "cc" or "note";
+        bool disabled = kind == "none";
+        bool isKey = kind == "key";
+        bool isTransport = kind == "transport";
+        bool usesPick = kind is "cc" or "note" or "cc14";
+        bool usesTypedNumber = kind is "nrpn" or "rpn";
+        bool usesNumber = usesPick || usesTypedNumber;
+        bool oneShot = isKey || isTransport;
 
-        _touchNumberLabel.Text = kind switch { "note" => "Note", "pitchbend" => "", _ => "CC" };
-        _touchNumberLabel.IsVisible = usesNumber;
-        _touchPick.IsVisible = usesNumber;
-        _touchChannel.IsEnabled = kind != "none";
+        _touchNumberLabel.Text = kind switch
+        {
+            "note" => "Note", "key" => "Keys", "transport" => "Command",
+            "nrpn" => "NRPN", "rpn" => "RPN", "cc14" => "CC",
+            "program" => "", "pitchbend" => "", "aftertouch" => "", _ => "CC",
+        };
+        _touchNumberLabel.IsVisible = usesNumber || isKey || isTransport;
+        _touchPick.IsVisible = usesPick;
+        _touchTransport.IsVisible = isTransport;
+        _touchKey.IsVisible = isKey;
+        _touchNumber.IsVisible = usesTypedNumber;
+        _touchNumber.Width = usesTypedNumber ? 88 : 0;
+        _touchChannel.IsEnabled = !disabled && !oneShot;
+        _touchOff.IsEnabled = !disabled && !oneShot;
+        _touchOn.IsEnabled = !disabled && !oneShot;
+        _touchMode.IsEnabled = !disabled && !oneShot;
 
         bool loading = _loadingSelection;
         _loadingSelection = true;
@@ -1131,9 +1248,13 @@ public partial class MainWindow : Window
         {
             "note" => Enumerable.Range(0, 128).Select(MidiNames.NoteLabel).ToList(),
             "cc" => Enumerable.Range(0, 128).Select(MidiNames.CcLabel).ToList(),
+            "cc14" => Enumerable.Range(0, 32).Select(MidiNames.CcLabel).ToList(),
             _ => new List<string>(),
         };
-        if (usesNumber) _touchPick.SelectedIndex = Math.Clamp(keep, 0, 127);
+        if (usesPick && keep >= 0)
+            _touchPick.SelectedIndex = kind == "cc14" ? Math.Clamp(keep, 0, 31) : Math.Clamp(keep, 0, 127);
+        else
+            _touchPick.SelectedIndex = -1;
         _loadingSelection = loading;
     }
 
@@ -1151,6 +1272,9 @@ public partial class MainWindow : Window
         ApplyTouchKind();
         _loadingSelection = true;
         _touchPick.SelectedIndex = Math.Clamp(m.Number, 0, 127);
+        _touchNumber.Text = m.Number.ToString();
+        _touchKey.Text = m.KeyGesture;
+        _touchTransport.SelectedIndex = Array.FindIndex(Transport.All, c => c.Id == m.TransportCommand);
         // From is what a released finger sends, To is what a touching one sends.
         _touchOff.Text = m.From.ToString();
         _touchOn.Text = m.To.ToString();
@@ -1167,7 +1291,13 @@ public partial class MainWindow : Window
         int si = _touchSend.SelectedIndex;
         m.Send = si >= 0 && si < SendKinds.Length ? SendKinds[si].value : "none";
         if (_touchChannel.SelectedIndex >= 0) m.Channel = _touchChannel.SelectedIndex + 1;
-        if (_touchPick.SelectedIndex >= 0) m.Number = _touchPick.SelectedIndex;
+        if (_touchPick.IsVisible && _touchPick.SelectedIndex >= 0)
+            m.Number = _touchPick.SelectedIndex;
+        else if (int.TryParse(_touchNumber.Text, out int n))
+            m.Number = m.Send is "nrpn" or "rpn" ? Math.Clamp(n, 0, 16383) : Math.Clamp(n, 0, 127);
+        m.KeyGesture = Keystroke.Normalise(_touchKey.Text ?? "");
+        if (_touchTransport.SelectedIndex >= 0)
+            m.TransportCommand = Transport.All[_touchTransport.SelectedIndex].Id;
         if (int.TryParse(_touchOff.Text, out int off)) m.From = Math.Clamp(off, 0, 127);
         if (int.TryParse(_touchOn.Text, out int on)) m.To = Math.Clamp(on, 0, 127);
         m.Mode = _touchMode.SelectedIndex == 1 ? "toggle" : "momentary";
@@ -1186,7 +1316,13 @@ public partial class MainWindow : Window
         m.Label = new string((_selLabel.Text ?? "").Where(c => c >= 32 && c <= 126).ToArray());
         int si = _selSend.SelectedIndex;
         m.Send = si >= 0 && si < SendKinds.Length ? SendKinds[si].value : "cc";
-        if (int.TryParse(_selNumber.Text, out int n)) m.Number = Math.Clamp(n, 0, 127);
+        if (int.TryParse(_selNumber.Text, out int n))
+            m.Number = m.Send switch
+            {
+                "nrpn" or "rpn" => Math.Clamp(n, 0, 16383),
+                "cc14" => Math.Clamp(n, 0, 31),
+                _ => Math.Clamp(n, 0, 127),
+            };
         m.KeyGesture = Keystroke.Normalise(_selKey.Text ?? "");
         if (_selTransport.SelectedIndex >= 0)
             m.TransportCommand = Transport.All[_selTransport.SelectedIndex].Id;
@@ -1196,15 +1332,29 @@ public partial class MainWindow : Window
         var kinds = ModeKinds;
         int mi = _selMode.SelectedIndex;
         m.Mode = mi >= 0 && mi < kinds.Length ? kinds[mi].value
-               : (_selected is ButtonTile ? "momentary" : "normal");
+               : (SelectionIsSwitch ? "momentary" : "normal");
         if (int.TryParse(_selPoints.Text, out int pts)) m.Points = Math.Clamp(pts, 2, 128);
+        if (_selected is AnalogTile analogSel && !analogSel.IsSwitch)
+            m.Pickup = _selPickup.IsChecked == true;
         ShowStepFields();
         ShowBinding(m);
 
         switch (_selected)
         {
             case EncoderTile enc: enc.RefreshCaption(); break;
-            case AnalogTile ana: ana.RefreshCaption(); break;
+            case AnalogTile ana:
+                ana.RefreshCaption();
+                _engine.ArmAnalogPickup(ana.Code);
+                lock (_lock)
+                {
+                    if (!ana.Mapping.Silent && _engine.AnalogPickupArmed(ana.Code))
+                    {
+                        _analogPickup.Add(ana.Code);
+                        _analogDirty.Add(ana.Code);
+                    }
+                    else _analogPickup.Remove(ana.Code);
+                }
+                break;
             case ButtonTile btn: btn.RefreshCaption(); break;
         }
 
@@ -1230,8 +1380,8 @@ public partial class MainWindow : Window
 
     void OnButton(ButtonEventArgs e)
     {
-        if (e.Pressed && e.Code == ViewButtonCode) { Post(ToggleWindow); return; }
-        if (e.Pressed && e.Code == LearnButtonCode) { Post(CycleLearn); return; }
+        if (e.Pressed && e.Code == ViewButtonCode) Post(ToggleWindow);
+        if (e.Pressed && e.Code == LearnButtonCode) Post(CycleLearn);
         lock (_lock)
         {
             _btnState[e.Code] = e.Pressed;
@@ -1296,10 +1446,37 @@ public partial class MainWindow : Window
         if (analogs != null)
             foreach (int code in analogs)
                 if (_analogs.TryGetValue(code, out var t))
-                    t.Set(_analogValue.TryGetValue(code, out int v) ? v : 0);
+                    t.Set(
+                        _analogValue.TryGetValue(code, out int v) ? v : 0,
+                        _analogPickup.Contains(code),
+                        _analogCatch.TryGetValue(code, out int catchAt) ? catchAt : -1);
 
         if (lines != null) { foreach (string l in lines) Append(l); }
         FlushLog();
+        if (_demo != null)
+            _demo.Content = _engine.DemoRunning ? "Stop" : "Demo";
+        TryRunProbeFile();
+    }
+
+    /// <summary>
+    /// Drop a one-line command into probe.txt (next to the exe or the repo) to fire
+    /// an isolated lamp/display test while this window is connected.
+    /// </summary>
+    void TryRunProbeFile()
+    {
+        foreach (string path in Program.ProbeFilePaths())
+        {
+            if (!File.Exists(path)) continue;
+            string spec = "";
+            try
+            {
+                spec = File.ReadAllText(path).Trim();
+                File.Delete(path);
+            }
+            catch { return; }
+            if (spec.Length > 0) _engine.Probe(spec);
+            return;
+        }
     }
 
     /// <summary>Silent connection attempt; noisy only when the state actually changes.</summary>
@@ -1311,15 +1488,14 @@ public partial class MainWindow : Window
         {
             if (_engine.Start())
             {
-                _connect.Content = "Disconnect";
-                _status.Text = "connected to UltraNova";
-                Enqueue("connected automatically");
+                Enqueue("USB host open");
+                RefreshHostChrome();
             }
             else if (!_reportedMissing)
             {
                 _reportedMissing = true;
-                _status.Text = "waiting for the synth";
                 Enqueue("synth not found - waiting. Check it is on and the original Automap is closed.");
+                RefreshHostChrome();
             }
         }
         finally { _connecting = false; }
@@ -1335,10 +1511,9 @@ public partial class MainWindow : Window
         {
             _retry?.Stop();          // an explicit disconnect means stay disconnected
             _engine.Stop();
-            _connect.Content = "Connect";
-            _status.Text = "not connected";
             _mode.Text = "-";
-            Enqueue("disconnected");
+            Enqueue("USB host closed");
+            RefreshHostChrome();
             return;
         }
 
@@ -1349,14 +1524,13 @@ public partial class MainWindow : Window
 
         if (_engine.Start())
         {
-            _connect.Content = "Disconnect";
-            _status.Text = "connected to UltraNova";
-            Enqueue("connected. Press AUTOMAP on the synth.");
+            Enqueue("USB host open. Press AUTOMAP on the synth.");
+            RefreshHostChrome();
         }
         else
         {
-            _status.Text = "connection failed";
-            Enqueue("could not connect - check the synth is on and the original Automap is not running.");
+            Enqueue("could not open USB - check the synth is on and the original Automap is not running.");
+            RefreshHostChrome();
         }
     }
 
@@ -1375,6 +1549,29 @@ public partial class MainWindow : Window
         }
         _engine.ResetValues();
         Enqueue("all encoder values reset to zero");
+    }
+
+    void ClearBankMap()
+    {
+        WriteBackSelection();
+        WriteBackTouch();
+        _engine.Config.ClearBank(_engine.BankIndex);
+        _engine.SetPage(_engine.PageIndex);
+        ReloadPage();
+        if (_engine.Connected) { _engine.ReopenOutputs(); _engine.DrawLabels(); }
+        Enqueue($"cleared every assignment on {_engine.CurrentBank.Name} — navigation still works");
+    }
+
+    void RevertPageMap()
+    {
+        WriteBackSelection();
+        WriteBackTouch();
+        int bank = _engine.BankIndex, page = _engine.PageIndex;
+        _engine.Config.RevertPage(bank, page);
+        _engine.SetPage(page);
+        ReloadPage();
+        if (_engine.Connected) { _engine.ReopenOutputs(); _engine.DrawLabels(); }
+        Enqueue($"reverted {_engine.CurrentBank.Name} page {page + 1} to the factory map");
     }
 
     static readonly FilePickerFileType MapFile = new("UltraNovaCtl mapping")
@@ -1533,7 +1730,7 @@ public partial class MainWindow : Window
             _engine.Config.ShowDebugTools = value;
             ApplyDebugTools();
             Enqueue(value
-                ? "debug tools on — lamp walker and LEARN/VIEW assignments at the bottom"
+                ? "debug tools on — short hello, then Demo for the 20 s film"
                 : "debug tools off");
         }
     }
@@ -1545,8 +1742,9 @@ public partial class MainWindow : Window
             bool on = _engine.Config.ShowDebugTools;
             _debugLeds.IsVisible = on;
             _debugLeds.IsExpanded = on;
+            if (on) _engine.QueueDemo();
+            else _engine.CancelQueuedDemo();
         }
-        BuildReservedTiles();
         BuildDebugAppButtons();
     }
 
@@ -1716,21 +1914,16 @@ public sealed class EncoderTile
         _value.Text = value.ToString();
     }
 
-    public void RefreshCaption() => _caption.Text = Mapping.Send switch
-    {
-        "none" => "—",
-        "pitchbend" => "Bend · ch " + Mapping.Channel,
-        "note" => $"{MidiNames.NoteShort(Mapping.Number)} · ch {Mapping.Channel}",
-        _ => $"{Mapping.DisplayLabel} · {Mapping.Number:000}",
-    };
+    public void RefreshCaption() => _caption.Text = Mapping.Caption;
 }
 
 /// <summary>
-/// A wheel or pedal drawn as a horizontal fader. The bar travels smoothly rather than
-/// jumping, because a jump reads as a glitch while a 90ms slide reads as movement; the
-/// border lights briefly on each message so activity is visible even when the value
-/// barely changes. Pitch bend is bipolar - it grows from the centre in both directions,
-/// since its rest position is the middle of the range, not the left edge.
+/// A wheel or pedal drawn as a horizontal fader, except sustain, which is a footswitch
+/// and lights like a panel button. The bar travels smoothly rather than jumping, because
+/// a jump reads as a glitch while a 90ms slide reads as movement; the border lights
+/// briefly on each message so activity is visible even when the value barely changes.
+/// Pitch bend is bipolar - it grows from the centre in both directions, since its rest
+/// position is the middle of the range, not the left edge.
 /// </summary>
 public sealed class AnalogTile
 {
@@ -1742,16 +1935,19 @@ public sealed class AnalogTile
     public Mapping Mapping { get; }
 
     readonly TextBlock _caption, _value;
-    readonly Border _fill, _centre;
+    readonly Border _fill, _ghost, _centre;
     readonly DispatcherTimer _glow;
 
     static readonly IBrush Idle = new SolidColorBrush(Color.Parse("#14141A"));
     static readonly IBrush Picked = new SolidColorBrush(Color.Parse("#1B2430"));
+    static readonly IBrush Down = new SolidColorBrush(Color.Parse("#3A2E14"));
     static readonly IBrush IdleEdge = new SolidColorBrush(Color.Parse("#22222C"));
     static readonly IBrush PickedEdge = new SolidColorBrush(Color.Parse("#4C7FA8"));
     static readonly IBrush ActiveEdge = new SolidColorBrush(Color.Parse("#F5A524"));
+    static readonly IBrush DownEdge = new SolidColorBrush(Color.Parse("#E8A33D"));
     static readonly IBrush FillIdle = new SolidColorBrush(Color.Parse("#5AA9E6"));
     static readonly IBrush FillActive = new SolidColorBrush(Color.Parse("#F5A524"));
+    static readonly IBrush CatchMark = new SolidColorBrush(Color.Parse("#F5A524"));
 
     bool _selected, _hot;
 
@@ -1763,6 +1959,9 @@ public sealed class AnalogTile
 
     /// <summary>Pitch bend rests in the middle, so its bar grows from the centre.</summary>
     bool Bipolar => Code == 2;
+
+    /// <summary>Sustain is a footswitch; the rest of this row is a pot or a wheel.</summary>
+    public bool IsSwitch => Config.IsAnalogSwitch(Code);
 
     public AnalogTile(int code, string name, Mapping m)
     {
@@ -1789,6 +1988,7 @@ public sealed class AnalogTile
             Height = 5,
             Width = 0,
             HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Center,
             CornerRadius = new CornerRadius(2),
             Transitions = new Transitions
             {
@@ -1811,17 +2011,34 @@ public sealed class AnalogTile
             Width = 1, Height = 5,
             Background = new SolidColorBrush(Color.Parse("#3A3A46")),
             HorizontalAlignment = HorizontalAlignment.Center,
-            IsVisible = Bipolar,
+            VerticalAlignment = VerticalAlignment.Center,
+            IsVisible = Bipolar && !IsSwitch,
         };
 
-        var track = new Grid { Height = 5, Width = TrackWidth };
+        // A tick on top of the value bar, so the catch point stays visible even
+        // when the live reading is past it.
+        _ghost = new Border
+        {
+            Background = CatchMark,
+            Width = 3,
+            Height = 9,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Center,
+            CornerRadius = new CornerRadius(1),
+            IsVisible = false,
+        };
+
+        var track = new Grid { Height = 9, Width = TrackWidth };
         track.Children.Add(new Border
         {
             Background = new SolidColorBrush(Color.Parse("#1C1C24")),
             CornerRadius = new CornerRadius(2),
+            Height = 5,
+            VerticalAlignment = VerticalAlignment.Center,
         });
         track.Children.Add(_centre);
         track.Children.Add(_fill);
+        track.Children.Add(_ghost);
 
         _caption = new TextBlock
         {
@@ -1853,26 +2070,40 @@ public sealed class AnalogTile
         RefreshCaption();
     }
 
-    public void Set(int value)
+    public void Set(int value, bool pickup = false, int catchAt = -1)
     {
         value = Math.Clamp(value, 0, 127);
-        _value.Text = value.ToString();
 
-        if (Bipolar)
+        if (IsSwitch)
         {
-            // Distance from the centre, drawn to whichever side the control moved.
-            double half = TrackWidth / 2;
-            double offset = (value - 64) / 63.0;
-            double w = Math.Abs(offset) * half;
-            _fill.HorizontalAlignment = HorizontalAlignment.Left;
-            _fill.Margin = new Thickness(offset >= 0 ? half : half - w, 0, 0, 0);
-            _fill.Width = w;
-        }
-        else
-        {
+            bool on = value >= 64;
+            _value.Text = on ? "on" : "off";
             _fill.Margin = new Thickness(0);
-            _fill.Width = TrackWidth * value / 127.0;
+            _fill.Width = on ? TrackWidth : 0;
+            _fill.Background = FillActive;
+            _ghost.IsVisible = false;
+            _hot = on;
+            _glow.Stop();
+            Restyle();
+            return;
         }
+
+        if (pickup && catchAt >= 0)
+        {
+            _value.Text = value + " → " + catchAt;
+            PlaceMarker(_ghost, catchAt);
+            _ghost.IsVisible = true;
+            PlaceBar(_fill, value);
+            _fill.Background = FillIdle;
+            _hot = true;
+            Restyle();
+            _glow.Stop();
+            return;
+        }
+
+        _value.Text = value.ToString();
+        _ghost.IsVisible = false;
+        PlaceBar(_fill, value);
 
         _hot = true;
         _fill.Background = FillActive;
@@ -1881,19 +2112,47 @@ public sealed class AnalogTile
         _glow.Start();
     }
 
+    void PlaceMarker(Border mark, int value)
+    {
+        value = Math.Clamp(value, 0, 127);
+        double x = TrackWidth * value / 127.0 - mark.Width / 2;
+        if (x < 0) x = 0;
+        if (x > TrackWidth - mark.Width) x = TrackWidth - mark.Width;
+        mark.Margin = new Thickness(x, 0, 0, 0);
+    }
+
+    void PlaceBar(Border bar, int value)
+    {
+        value = Math.Clamp(value, 0, 127);
+        if (Bipolar)
+        {
+            double half = TrackWidth / 2;
+            double offset = (value - 64) / 63.0;
+            double w = Math.Abs(offset) * half;
+            bar.HorizontalAlignment = HorizontalAlignment.Left;
+            bar.Margin = new Thickness(offset >= 0 ? half : half - w, 0, 0, 0);
+            bar.Width = w;
+        }
+        else
+        {
+            bar.Margin = new Thickness(0);
+            bar.Width = TrackWidth * value / 127.0;
+        }
+    }
+
     void Restyle()
     {
+        if (IsSwitch)
+        {
+            Root.Background = _hot ? Down : _selected ? Picked : Idle;
+            Root.BorderBrush = _hot ? DownEdge : _selected ? PickedEdge : IdleEdge;
+            return;
+        }
         Root.Background = _selected ? Picked : Idle;
         Root.BorderBrush = _hot ? ActiveEdge : _selected ? PickedEdge : IdleEdge;
     }
 
-    public void RefreshCaption() => _caption.Text = Mapping.Send switch
-    {
-        "none" => "\u2014",
-        "pitchbend" => "Bend \u00b7 ch " + Mapping.Channel,
-        "note" => MidiNames.NoteShort(Mapping.Number) + " \u00b7 ch " + Mapping.Channel,
-        _ => $"CC {Mapping.Number:000} \u00b7 ch {Mapping.Channel}",
-    };
+    public void RefreshCaption() => _caption.Text = Mapping.Caption;
 }
 
 /// <summary>One panel button: name, code, and what it sends.</summary>
@@ -1923,6 +2182,7 @@ public sealed class ButtonTile
         var title = new TextBlock
         {
             Text = name, FontSize = 11,
+            TextWrapping = TextWrapping.Wrap,
             Foreground = new SolidColorBrush(Color.Parse("#C8C8D4")),
         };
         // What the button last sent. In toggle and step modes this is the only way to
@@ -1965,11 +2225,5 @@ public sealed class ButtonTile
         Root.BorderBrush = _pressed ? DownEdge : _selected ? PickedEdge : IdleEdge;
     }
 
-    public void RefreshCaption() => _caption.Text = Mapping.Send switch
-    {
-        "none" => "—",
-        "pitchbend" => "Bend · ch " + Mapping.Channel,
-        "note" => $"{MidiNames.NoteShort(Mapping.Number)} · ch {Mapping.Channel}",
-        _ => $"CC {Mapping.Number:000} · ch {Mapping.Channel}",
-    };
+    public void RefreshCaption() => _caption.Text = Mapping.Caption;
 }

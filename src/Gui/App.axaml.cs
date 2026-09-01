@@ -3,6 +3,7 @@ using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
 using Avalonia.Platform;
+using Avalonia.Threading;
 using UltraNovaCtl.Core;
 
 namespace UltraNovaCtl.Gui;
@@ -30,8 +31,32 @@ public partial class App : Application
             // should put the program away, not stop the server mid-performance.
             desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
             BuildTray(desktop);
+            WatchForSecondInstance();
         }
         base.OnFrameworkInitializationCompleted();
+    }
+
+    /// <summary>
+    /// A second process holds the mutex for a moment, pulses this event, and exits.
+    /// Raise the existing window instead of opening another USB session.
+    /// </summary>
+    void WatchForSecondInstance()
+    {
+        var ev = Program.ShowSignal;
+        if (ev == null) return;
+        new Thread(() =>
+        {
+            while (true)
+            {
+                try { ev.WaitOne(); }
+                catch { break; }
+                Dispatcher.UIThread.Post(() => _window?.ShowFromTray());
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "single-instance",
+        }.Start();
     }
 
     void BuildTray(IClassicDesktopStyleApplicationLifetime desktop)
@@ -96,7 +121,7 @@ public partial class App : Application
 
         _tray = new TrayIcon
         {
-            ToolTipText = "UltraNovaCtl",
+            ToolTipText = "UltraNovaCtl " + Program.AppVersion,
             Menu = menu,
             IsVisible = true,
         };

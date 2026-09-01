@@ -78,25 +78,24 @@
 
   <DockPanel>
 
-    <!-- toolbar -->
+    <!-- One toolbar row. Automap connected/not lives in the window title, not here. -->
     <Border DockPanel.Dock="Top" Background="#15151B" BorderBrush="#24242C"
-            BorderThickness="0,0,0,1" Padding="10,8">
-      <Grid ColumnDefinitions="Auto,Auto,*,Auto,Auto,Auto,Auto,Auto,Auto">
-        <Button Name="ConnectBtn" Grid.Column="0" Classes="tool" Content="Connect" Width="104"
-                ToolTip.Tip="Connects on its own at startup and keeps retrying. Disconnecting here stops that until you connect again."/>
-        <TextBlock Name="StatusText" Grid.Column="1" Margin="12,0,0,0"
-                   VerticalAlignment="Center" FontSize="12" Foreground="#9A9AAA"
-                   Text="not connected"/>
-
-        <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
-          <TextBlock Text="MIDI out" Classes="stat" VerticalAlignment="Center" Margin="0,0,6,0"/>
-          <ComboBox Name="PortBox" Width="150" FontSize="12"
-                    ToolTip.Tip="Where the mapped controls are sent. A virtual port such as loopMIDI is what a DAW listens to."/>
-          <TextBlock Text="Learn in" Classes="stat" VerticalAlignment="Center" Margin="12,0,6,0"
-                     ToolTip.Tip="Port to listen on while learning: the interface a foreign synth is plugged into"/>
-          <ComboBox Name="InPortBox" Width="150" FontSize="12"/>
+            BorderThickness="0,0,0,1" Padding="10,6">
+      <Grid ColumnDefinitions="Auto,*,Auto,*,Auto,Auto" VerticalAlignment="Center">
+        <TextBlock Grid.Column="0" Text="MIDI out" Classes="stat"
+                   VerticalAlignment="Center" Margin="0,0,6,0"/>
+        <ComboBox Grid.Column="1" Name="PortBox" MinWidth="80" FontSize="12"
+                  HorizontalAlignment="Stretch"
+                  ToolTip.Tip="Where the mapped controls are sent. A virtual port such as loopMIDI is what a DAW listens to."/>
+        <TextBlock Grid.Column="2" Text="Learn in" Classes="stat"
+                   VerticalAlignment="Center" Margin="12,0,6,0"
+                   ToolTip.Tip="Port to listen on while learning: the interface a foreign synth is plugged into"/>
+        <ComboBox Grid.Column="3" Name="InPortBox" MinWidth="80" FontSize="12"
+                  HorizontalAlignment="Stretch"/>
+        <StackPanel Grid.Column="4" Orientation="Horizontal" VerticalAlignment="Center"
+                    Margin="6,0,0,0">
           <Button Name="TestBtn" Classes="tool" Content="Test" Width="52"
-                  Margin="6,0,0,0" FontSize="11"
+                  FontSize="11"
                   ToolTip.Tip="Send CC 21 to the output, value 127 then 0. If a monitor sees it but the DAW does not, the DAW must reconnect - that cannot be done from here."/>
           <Button Name="ReinitBtn" Classes="tool" Content="Reinit" Width="62"
                   Margin="6,0,0,0" FontSize="11"
@@ -104,29 +103,28 @@
           <Button Name="RescanBtn" Classes="tool" Content="&#x21BB;" Width="34"
                   Margin="6,0,0,0" FontSize="14"
                   ToolTip.Tip="Rescan MIDI devices - use after plugging an interface in"/>
-        </StackPanel>
-
-        <StackPanel Grid.Column="4" Orientation="Horizontal" VerticalAlignment="Center"
-                    Margin="10,0,0,0" Spacing="6">
           <Border Name="LearnBadge" Background="#2A2416" BorderBrush="#F5A524"
-                  BorderThickness="1" CornerRadius="6" Padding="8,4" IsVisible="False">
+                  BorderThickness="1" CornerRadius="6" Padding="8,4" Margin="10,0,0,0"
+                  IsVisible="False">
             <TextBlock Text="LEARN" FontSize="11" FontWeight="Bold" Foreground="#F5A524"/>
           </Border>
-          <TextBlock Text="Learn" Classes="stat" VerticalAlignment="Center"/>
+          <TextBlock Text="Learn" Classes="stat" VerticalAlignment="Center" Margin="10,0,6,0"/>
           <ComboBox Name="LearnBox" Width="86" Height="30" FontSize="12"
                     VerticalContentAlignment="Center"
                     ToolTip.Tip="Watches the Learn in port and copies what a foreign device sends onto the selected control. On does it once and switches off; Latch keeps going."/>
         </StackPanel>
-        <Button Name="SaveBtn" Grid.Column="5" Classes="tool" Content="Save"
-                Margin="8,0,0,0" Width="66"
-                ToolTip.Tip="Save to the working configuration used at startup"/>
-        <Button Name="ExportBtn" Grid.Column="6" Classes="tool" Content="Export"
-                Margin="6,0,0,0" Width="70"
-                ToolTip.Tip="Write these mappings to a file"/>
-        <Button Name="ImportBtn" Grid.Column="7" Classes="tool" Content="Import"
-                Margin="6,0,0,0" Width="70"
-                ToolTip.Tip="Load mappings from a file"/>
-
+        <StackPanel Grid.Column="5" Orientation="Horizontal" VerticalAlignment="Center"
+                    Margin="10,0,0,0" Spacing="6">
+          <Button Name="SaveBtn" Classes="tool" Content="Save" Width="66"
+                  ToolTip.Tip="Save to the working configuration used at startup"/>
+          <Button Name="ExportBtn" Classes="tool" Content="Export" Width="70"
+                  ToolTip.Tip="Write these mappings to a file"/>
+          <Button Name="ImportBtn" Classes="tool" Content="Import" Width="70"
+                  ToolTip.Tip="Load mappings from a file"/>
+          <Button Name="ConnectBtn" Classes="tool" Content="USB" Width="44" FontSize="11"
+                  Opacity="0.55"
+                  ToolTip.Tip="USB host session. The app keeps this open on its own. Window title is Automap, not this."/>
+        </StackPanel>
       </Grid>
     </Border>
 
@@ -180,23 +178,21 @@
       </Grid>
     </Border>
 
-    <!-- editor for the selected control, laid out like the original's Edit Assignment -->
+    <!-- Selected control name is compact on the left; the tabs use the rest. -->
     <Border DockPanel.Dock="Top" Background="#15151B" BorderBrush="#24242C"
             BorderThickness="0,0,0,1" Padding="12,8">
-      <Grid ColumnDefinitions="230,*">
+      <Grid ColumnDefinitions="Auto,*">
 
-        <!-- what is being edited, large and central like the original header -->
-        <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="1">
-          <TextBlock Name="SelName" FontSize="17" FontWeight="SemiBold"
-                     Foreground="#F5C87A" Text="nothing selected"/>
-          <StackPanel Orientation="Horizontal" Spacing="8">
-            <TextBlock Name="SelBinding" Classes="stat" Text="click a knob or button"/>
-            <TextBlock Name="SelValue" FontSize="13" FontFamily="Consolas,monospace"
-                       Foreground="#D0D0DC" Text=""/>
-          </StackPanel>
+        <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,14,0" MaxWidth="168">
+          <TextBlock Name="SelName" FontSize="15" FontWeight="SemiBold"
+                     Foreground="#F5C87A" TextWrapping="Wrap" Text="nothing selected"/>
+          <TextBlock Name="SelBinding" Classes="stat" TextWrapping="Wrap"
+                     Text="click a knob or button"/>
+          <TextBlock Name="SelValue" FontSize="13" FontFamily="Consolas,monospace"
+                     Foreground="#D0D0DC" Text=""/>
         </StackPanel>
 
-        <TabControl Grid.Column="1" Name="EditTabs" Padding="0" Margin="10,0,0,0">
+        <TabControl Grid.Column="1" Name="EditTabs" Padding="0">
 
           <TabItem Header="Parameter" FontSize="12">
             <Grid ColumnDefinitions="Auto,Auto,Auto,*" Margin="0,8,0,0">
@@ -206,63 +202,78 @@
                          VerticalContentAlignment="Center" Padding="8,0"/>
               </StackPanel>
 
-              <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="14,0,0,0">
+              <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0">
                 <TextBlock Text="Sends" Classes="stat" VerticalAlignment="Center" Margin="0,0,6,0"/>
-                <ComboBox Name="SelSend" Width="148" FontSize="12" Height="30"
+                <ComboBox Name="SelSend" Width="168" FontSize="12" Height="30"
                           ToolTip.Tip="What this control sends. Disabled silences it and shows a dash on the synth display."
                           VerticalContentAlignment="Center"/>
               </StackPanel>
 
-              <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="14,0,0,0">
+              <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0">
                 <TextBlock Text="Ch" Classes="stat" VerticalAlignment="Center" Margin="0,0,6,0"/>
                 <ComboBox Name="SelChannel" Width="62" FontSize="12" Height="30"
                           ToolTip.Tip="MIDI channel. Different channels let one bank drive several instruments at once."
                           FontFamily="Consolas,monospace" VerticalContentAlignment="Center"/>
               </StackPanel>
 
-              <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center" Margin="14,0,0,0">
-                <TextBlock Name="NumberLabel" Text="Number" Classes="stat"
+              <Grid Grid.Column="3" ColumnDefinitions="Auto,*" VerticalAlignment="Center" Margin="12,0,0,0">
+                <TextBlock Grid.Column="0" Name="NumberLabel" Text="Number" Classes="stat"
                            VerticalAlignment="Center" Margin="0,0,6,0"/>
-                <ComboBox Name="SelTransport" Width="252" FontSize="12" Height="30"
+                <ComboBox Grid.Column="1" Name="SelTransport" MinWidth="120" FontSize="12" Height="30"
                           VerticalContentAlignment="Center" IsVisible="False"
+                          HorizontalAlignment="Stretch"
                           ToolTip.Tip="Real-time messages drive a sequencer slaved to external clock; MMC is remote control of a DAW's own transport. Which works depends on the software."/>
-                <TextBox Name="SelKey" Width="252" FontSize="12" Height="30"
+                <TextBox Grid.Column="1" Name="SelKey" MinWidth="120" FontSize="12" Height="30"
                          FontFamily="Consolas,monospace" VerticalContentAlignment="Center"
                          Padding="8,0" IsVisible="False" Watermark="click here and press the keys"
+                         HorizontalAlignment="Stretch"
                          ToolTip.Tip="Click the field and press the combination. It is sent to whatever window has focus."/>
-                <ComboBox Name="SelPick" Width="252" MinWidth="252" MaxWidth="252"
-                          FontSize="12" Height="30"
+                <ComboBox Grid.Column="1" Name="SelPick" MinWidth="120" FontSize="12" Height="30"
                           FontFamily="Consolas,monospace" VerticalContentAlignment="Center"
+                          HorizontalAlignment="Stretch"
                           ToolTip.Tip="Type while the list is open to jump to an entry"/>
-                <TextBox Name="SelNumber" IsVisible="False" Width="0"/>
-              </StackPanel>
+                <TextBox Grid.Column="1" Name="SelNumber" IsVisible="False" Width="88"
+                         FontFamily="Consolas,monospace" VerticalContentAlignment="Center"
+                         HorizontalAlignment="Left"/>
+              </Grid>
             </Grid>
           </TabItem>
 
           <TabItem Name="TouchTab" Header="Touch" FontSize="12">
-            <Grid ColumnDefinitions="Auto,Auto,Auto,*" Margin="0,8,0,0">
-              <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-                <TextBlock Text="On touch" Classes="stat" VerticalAlignment="Center" Margin="0,0,6,0"/>
-                <ComboBox Name="TouchSend" Width="148" FontSize="12" Height="30"
-                          ToolTip.Tip="What a finger landing on this knob sends, separately from turning it. Off by default."
-                          VerticalContentAlignment="Center"/>
-              </StackPanel>
-
-              <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="14,0,0,0">
-                <TextBlock Text="Ch" Classes="stat" VerticalAlignment="Center" Margin="0,0,6,0"/>
-                <ComboBox Name="TouchChannel" Width="62" FontSize="12" Height="30"
-                          FontFamily="Consolas,monospace" VerticalContentAlignment="Center"/>
-              </StackPanel>
-
-              <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="14,0,0,0">
-                <TextBlock Name="TouchNumberLabel" Text="CC" Classes="stat"
-                           VerticalAlignment="Center" Margin="0,0,6,0"/>
-                <ComboBox Name="TouchPick" Width="252" MinWidth="252" MaxWidth="252"
-                          FontSize="12" Height="30" FontFamily="Consolas,monospace"
-                          VerticalContentAlignment="Center"/>
-              </StackPanel>
-
-              <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center" Margin="16,0,0,0">
+            <Grid RowDefinitions="Auto,Auto" Margin="0,8,0,0">
+              <Grid Grid.Row="0" ColumnDefinitions="Auto,Auto,*">
+                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                  <TextBlock Text="On touch" Classes="stat" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                  <ComboBox Name="TouchSend" Width="168" FontSize="12" Height="30"
+                            ToolTip.Tip="What a finger landing on this knob sends, separately from turning it. Off by default."
+                            VerticalContentAlignment="Center"/>
+                </StackPanel>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0">
+                  <TextBlock Text="Ch" Classes="stat" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                  <ComboBox Name="TouchChannel" Width="62" FontSize="12" Height="30"
+                            FontFamily="Consolas,monospace" VerticalContentAlignment="Center"/>
+                </StackPanel>
+                <Grid Grid.Column="2" ColumnDefinitions="Auto,*" VerticalAlignment="Center" Margin="12,0,0,0">
+                  <TextBlock Grid.Column="0" Name="TouchNumberLabel" Text="CC" Classes="stat"
+                             VerticalAlignment="Center" Margin="0,0,6,0"/>
+                  <ComboBox Grid.Column="1" Name="TouchTransport" MinWidth="120" FontSize="12" Height="30"
+                            VerticalContentAlignment="Center" IsVisible="False"
+                            HorizontalAlignment="Stretch"
+                            ToolTip.Tip="Real-time messages drive a sequencer slaved to external clock; MMC is remote control of a DAW's own transport."/>
+                  <TextBox Grid.Column="1" Name="TouchKey" MinWidth="120" FontSize="12" Height="30"
+                           FontFamily="Consolas,monospace" VerticalContentAlignment="Center"
+                           Padding="8,0" IsVisible="False" Watermark="click here and press the keys"
+                           HorizontalAlignment="Stretch"
+                           ToolTip.Tip="Click the field and press the combination. It is sent to whatever window has focus."/>
+                  <ComboBox Grid.Column="1" Name="TouchPick" MinWidth="120" FontSize="12" Height="30"
+                            FontFamily="Consolas,monospace" VerticalContentAlignment="Center"
+                            HorizontalAlignment="Stretch"/>
+                  <TextBox Grid.Column="1" Name="TouchNumber" IsVisible="False" Width="88"
+                           FontFamily="Consolas,monospace" VerticalContentAlignment="Center"
+                           HorizontalAlignment="Left"/>
+                </Grid>
+              </Grid>
+              <StackPanel Grid.Row="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,8,0,0">
                 <TextBlock Text="Released" Classes="stat" VerticalAlignment="Center" Margin="0,0,6,0"/>
                 <TextBox Name="TouchOff" Width="58" FontSize="12" Height="30"
                          ToolTip.Tip="Sent when the finger leaves"
@@ -275,7 +286,7 @@
                          HorizontalContentAlignment="Center" Padding="4,0"/>
                 <ComboBox Name="TouchMode" Width="120" FontSize="12" Height="30" Margin="12,0,0,0"
                           VerticalContentAlignment="Center"
-                          ToolTip.Tip="Momentary follows the finger, Normal is a plain 127/0 switch, Toggle alternates on each touch, Step walks through positions"/>
+                          ToolTip.Tip="Momentary follows the finger. Toggle alternates on each touch."/>
               </StackPanel>
             </Grid>
           </TabItem>
@@ -314,8 +325,14 @@
                            Margin="8,0,0,0" Text=""/>
               </StackPanel>
 
-              <TextBlock Grid.Column="3" Classes="stat" VerticalAlignment="Center" Margin="16,0,0,0"
-                         Text="From above To inverts the control. Toggle latches a button."/>
+              <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center"
+                          Margin="16,0,0,0">
+                <CheckBox Name="SelPickupBox" Content="Pickup" FontSize="11"
+                          IsChecked="True" IsVisible="False"
+                          ToolTip.Tip="After a bank or page change, do not send until the physical position matches the last value sent on this page. Off: send the current position immediately. Wheels and pedals only."/>
+                <TextBlock Classes="stat" VerticalAlignment="Center" Margin="16,0,0,0"
+                           Text="From above To inverts the control. Toggle latches a button."/>
+              </StackPanel>
             </Grid>
           </TabItem>
 
@@ -339,12 +356,18 @@
       <ScrollViewer Grid.Row="0">
       <StackPanel Margin="14,12">
 
-        <Grid ColumnDefinitions="Auto,*,Auto" Margin="0,0,0,6">
+        <Grid ColumnDefinitions="Auto,*,Auto,Auto,Auto" Margin="0,0,0,6">
           <TextBlock Grid.Column="0" Classes="section" Text="ENCODERS" Margin="2,0,0,0"
                      VerticalAlignment="Center"/>
           <Button Name="ResetBtn" Grid.Column="2" Classes="tool" Content="Zero all"
-                  Width="80" FontSize="11" Padding="8,3"
-                  ToolTip.Tip="Set every encoder value back to zero"/>
+                  Width="80" FontSize="11" Padding="8,3" Margin="0,0,6,0"
+                  ToolTip.Tip="Set every encoder value back to zero. Assignments are left alone."/>
+          <Button Name="ClearBtn" Grid.Column="3" Classes="tool" Content="Clear"
+                  Width="70" FontSize="11" Padding="8,3" Margin="0,0,6,0"
+                  ToolTip.Tip="Remove every assignment on this bank, all pages. Navigation still works. Encoder values stay."/>
+          <Button Name="RevertBtn" Grid.Column="4" Classes="tool" Content="Revert"
+                  Width="74" FontSize="11" Padding="8,3"
+                  ToolTip.Tip="Restore this page to the factory map for this bank."/>
         </Grid>
         <Border Background="#111117" CornerRadius="6" BorderBrush="#20202A"
                 BorderThickness="1" Padding="10,12">
@@ -370,24 +393,15 @@
         </Border>
 
 
-        <!-- service sections: useful, but not wanted underfoot every day -->
-        <Expander Header="Reserved for navigation" IsExpanded="False" Margin="0,16,0,0"
-                  HorizontalAlignment="Stretch" FontSize="12">
-          <Border Background="#0F1218" CornerRadius="6" BorderBrush="#20202A"
-                  BorderThickness="1" Padding="10,8" Margin="0,6,0,0">
-            <WrapPanel Name="ReservedWrap" Orientation="Horizontal"/>
-          </Border>
-        </Expander>
-
         <Expander Name="DebugLedsExpander" Header="Debug tools" IsExpanded="False"
-                  Margin="0,8,0,0" HorizontalAlignment="Stretch" FontSize="12"
+                  Margin="0,16,0,0" HorizontalAlignment="Stretch" FontSize="12"
                   IsVisible="False">
           <StackPanel Margin="0,6,0,0" Spacing="10">
             <Border Background="#111117" CornerRadius="6" BorderBrush="#20202A"
                     BorderThickness="1" Padding="10,8">
               <StackPanel Spacing="6">
                 <TextBlock Classes="stat" TextWrapping="Wrap"
-                           Text="LEARN and VIEW still arm learn and show the window. Assign MIDI here and they send that too. Disabled by default."/>
+                           Text="LEARN, VIEW, banks and pages still do their jobs. Assign MIDI here and they send that too. Disabled by default."/>
                 <WrapPanel Name="DebugAppButtonsWrap" Orientation="Horizontal"/>
               </StackPanel>
             </Border>
@@ -408,6 +422,8 @@
                         ToolTip.Tip="Next code, lit - walk a range this way"/>
                 <Button Name="LedAllOffBtn" Classes="tool" Content="All off" Width="70" Margin="10,0,0,0"
                         ToolTip.Tip="Clear every lamp. Press a bank button on the synth to bring the navigation lamps back."/>
+                <Button Name="DemoBtn" Classes="tool" Content="Demo" Width="70"
+                        ToolTip.Tip="20 s panel film (all scenes in one run, at most 13 lamps). Press again to stop."/>
                 <TextBox Name="LedNameBox" Width="150" Height="30" FontSize="12" Margin="14,0,0,0"
                          VerticalContentAlignment="Center" Padding="8,0"
                          Watermark="what lit up?"/>

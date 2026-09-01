@@ -6,7 +6,7 @@ namespace UltraNovaCtl.Core;
 /// <summary>What a single physical control sends when it moves.</summary>
 public sealed class Mapping
 {
-    /// <summary>"cc", "note", "pitchbend", "key" or "none".</summary>
+    /// <summary>"cc", "cc14", "nrpn", "rpn", "note", "pitchbend", "program", "key", "transport" or "none".</summary>
     public string Send { get; set; } = "cc";
 
     /// <summary>
@@ -74,7 +74,41 @@ public sealed class Mapping
     /// </summary>
     public string Mode { get; set; } = "momentary";
 
+    /// <summary>
+    /// Soft takeover after a bank or page change: wait until the physical position
+    /// matches the last sent value. Null means on, the default for wheels and pedals.
+    /// Encoders ignore this (they are endless); sustain ignores it (a switch).
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? Pickup { get; set; }
+
     [JsonIgnore] public bool Silent => Send == "none";
+
+    /// <summary>Whether analog pickup is active. Null in the file means on.</summary>
+    [JsonIgnore] public bool PickupEnabled => Pickup != false;
+
+    /// <summary>
+    /// Last value this mapping sent on its page. -1 means this page has never
+    /// spoken. Session-only: it is how pickup knows where to catch.
+    /// </summary>
+    [JsonIgnore] public int LastValue { get; set; } = -1;
+
+    /// <summary>One line under a tile: what this mapping sends.</summary>
+    [JsonIgnore]
+    public string Caption => Send switch
+    {
+        "none" => "\u2014",
+        "pitchbend" => "Bend \u00b7 ch " + Channel,
+        "aftertouch" => "Aftertouch \u00b7 ch " + Channel,
+        "note" => MidiNames.NoteShort(Number) + " \u00b7 ch " + Channel,
+        "program" => "Program \u00b7 ch " + Channel,
+        "nrpn" => $"NRPN {Number} \u00b7 ch {Channel}",
+        "rpn" => $"RPN {Number} \u00b7 ch {Channel}",
+        "cc14" => $"CC {Number:000}+{Number + 32:000} \u00b7 ch {Channel}",
+        "key" => string.IsNullOrWhiteSpace(KeyGesture) ? "key" : KeyGesture,
+        "transport" => Transport.LabelOf(TransportCommand),
+        _ => $"CC {Number:000} \u00b7 ch {Channel}",
+    };
     [JsonIgnore] public bool Inverted => Mode == "inverted" || From > To;
     [JsonIgnore] public bool Relative => Mode.StartsWith("relative");
 
@@ -95,8 +129,19 @@ public sealed class Mapping
                 "transport" => TransportShort(),
                 "note" => MidiNames.NoteCompact(Number),
                 "pitchbend" => "Bend",
+                "aftertouch" => "Aftouch",
+                "program" => "Program",
+                "nrpn" => Compact("NR", Number),
+                "rpn" => Compact("RP", Number),
+                "cc14" => $"C14#{Number:00}",
                 _ => $"CC#{Number:000}",
             };
+
+            static string Compact(string p, int n)
+            {
+                string s = p + n;
+                return s.Length <= 8 ? s : s[..8];
+            }
         }
     }
 
@@ -125,6 +170,7 @@ public sealed class Mapping
         Send = Send, Channel = Channel, Number = Number,
         Label = Label, From = From, To = To, Mode = Mode, Points = Points,
         KeyGesture = KeyGesture, TransportCommand = TransportCommand,
+        Pickup = Pickup,
     };
 }
 
@@ -150,6 +196,9 @@ public sealed class Page
     /// the number it sends there, which is why the mod wheel lives under "1".
     /// </summary>
     public Dictionary<string, Mapping> Analog { get; set; } = new();
+
+    /// <summary>Encoder positions last seen on this page. Not saved with the mappings.</summary>
+    [JsonIgnore] public int[] LiveEncoders { get; set; }
 }
 
 /// <summary>
@@ -232,8 +281,8 @@ public sealed class Config
     public const int LedSynth = 12, LedAutomap = 14;
 
     /// <summary>
-    /// Buttons the application uses for itself. They drive navigation and cannot be
-    /// mapped: offering them would let a user silently break the way the panel works.
+    /// Buttons the application uses for itself. They keep those jobs; the debug bench
+    /// can assign MIDI on top. They stay out of the everyday button row.
     /// </summary>
     public static readonly Dictionary<int, string> ReservedButtons = new()
     {
@@ -313,6 +362,8 @@ public sealed class Config
             c.ApplyNames();
             c.SilenceFactoryAppButtons();
             c.RepairTouchModes();
+            c.RepairAnalogModes();
+            c.RepairAnalogFactorySends();
             return c;
         }
         catch (Exception e)
@@ -385,6 +436,24 @@ public sealed class Config
         return $"Analog {code}";
     }
 
+    /// <summary>
+    /// Sustain is a footswitch on a two-pole jack, same kind of control as a panel
+    /// button. Expression and the wheels are pots and stay continuous.
+    /// </summary>
+    public static bool IsAnalogSwitch(int code) => code == 4;
+
+    /// <summary>
+    /// Mod wheel and pitch bend already leave the UltraNova on its own MIDI port, so
+    /// they stay silent here. Expression, sustain and aftertouch only show up on the
+    /// Automap analog stream in this mode.
+    /// </summary>
+    public static string AnalogSendKind(int code) => code switch
+    {
+        1 or 2 => "none",
+        5 => "aftertouch",
+        _ => "cc",
+    };
+
     public static Page NewPage(string bankName, int index, int firstCc = 21)
     {
         string[] labels = { "OSC1", "OSC2", "CUTOFF", "RES", "ATTACK", "DECAY", "SUSTAIN", "RELEASE" };
@@ -421,15 +490,48 @@ public sealed class Config
                 Send = "none", Channel = 3, Number = 21 + i, From = 0, To = 127,
             };
 
-        // Wheels and pedals. Only the mod wheel's number is confirmed on hardware; the
-        // others fill in the first time they are moved with Learn on.
+        // Expression, sustain and aftertouch only arrive on the analog stream in Automap.
+        // Mod wheel and pitch bend already go out the synth's MIDI port.
         foreach (var (code, name, cc) in AnalogControls)
             page.Analog[code.ToString()] = new Mapping
             {
-                Send = "none", Channel = 1, Number = cc, Label = name,
+                Send = AnalogSendKind(code), Channel = 1, Number = cc, Label = name,
+                Mode = IsAnalogSwitch(code) ? "momentary" : "normal",
             };
 
         return page;
+    }
+
+    public static int FactoryFirstCc(int bankIndex) => 21 + Math.Max(0, bankIndex) * 20;
+
+    /// <summary>Strip every assignment on a page. Labels and numbers stay.</summary>
+    public static void SilencePage(Page page)
+    {
+        if (page == null) return;
+        if (page.Encoders != null)
+            foreach (var m in page.Encoders) m.Send = "none";
+        if (page.Buttons != null)
+            foreach (var m in page.Buttons.Values) m.Send = "none";
+        if (page.Touch != null)
+            foreach (var m in page.Touch.Values) m.Send = "none";
+        if (page.Analog != null)
+            foreach (var m in page.Analog.Values) m.Send = "none";
+    }
+
+    /// <summary>Every page of this bank, the way Automap's Clear emptied a map.</summary>
+    public void ClearBank(int bankIndex)
+    {
+        if (bankIndex < 0 || bankIndex >= Banks.Count) return;
+        foreach (var p in Banks[bankIndex].Pages) SilencePage(p);
+    }
+
+    /// <summary>Put this page back to the factory assignments for its bank.</summary>
+    public void RevertPage(int bankIndex, int pageIndex)
+    {
+        if (bankIndex < 0 || bankIndex >= Banks.Count) return;
+        var bank = Banks[bankIndex];
+        if (pageIndex < 0 || pageIndex >= bank.Pages.Count) return;
+        bank.Pages[pageIndex] = NewPage(bank.Name, pageIndex + 1, FactoryFirstCc(bankIndex));
     }
 
     /// <summary>
@@ -471,6 +573,57 @@ public sealed class Config
     }
 
     /// <summary>
+    /// Analog rows used to inherit Mapping.Mode's default of momentary, which is a
+    /// switch mode. Sustain keeps that; wheels and expression become normal unless
+    /// the user already picked inverted or a relative encoding.
+    /// </summary>
+    public void RepairAnalogModes()
+    {
+        foreach (var bank in Banks)
+        foreach (var page in bank.Pages)
+        {
+            if (page.Analog == null) continue;
+            foreach (var kv in page.Analog)
+            {
+                if (!int.TryParse(kv.Key, out int code)) continue;
+                if (IsAnalogSwitch(code))
+                {
+                    if (kv.Value.Mode.StartsWith("relative") || kv.Value.Mode == "inverted")
+                        kv.Value.Mode = "momentary";
+                }
+                else if (kv.Value.Mode is "momentary" or "toggle" or "step")
+                    kv.Value.Mode = "normal";
+            }
+        }
+    }
+
+    /// <summary>
+    /// Factory analog rows: expression / sustain / aftertouch that are still silent get
+    /// turned on; mod wheel / pitch bend that are still the stock CC 1 / pitch-bend row
+    /// (they already leave the synth's MIDI port) are turned off. Anything the user
+    /// changed is left alone.
+    /// </summary>
+    public void RepairAnalogFactorySends()
+    {
+        foreach (var bank in Banks)
+        foreach (var page in bank.Pages)
+        {
+            if (page.Analog == null) continue;
+            foreach (var (code, _, cc) in AnalogControls)
+            {
+                if (!page.Analog.TryGetValue(code.ToString(), out var m)) continue;
+                if (m.Channel != 1 || m.Number != cc) continue;
+                if (code is 1 or 2)
+                {
+                    if (m.Send is "cc" or "pitchbend") m.Send = "none";
+                }
+                else if (m.Send == "none")
+                    m.Send = AnalogSendKind(code);
+            }
+        }
+    }
+
+    /// <summary>
     /// Every panel button by the code it sends on channel 3. All forty were named on
     /// the hardware by pressing them one at a time and reading the code back.
     ///
@@ -503,7 +656,7 @@ public sealed class Config
         // value and block selection, and the push on the patch dial
         [35] = "VALUE+", [36] = "VALUE-",
         [37] = "SELECT UP", [38] = "SELECT DN",
-        [39] = "DIAL PUSH",
+        [39] = "PATCH KNOB PUSH",
     };
 
     /// <summary>

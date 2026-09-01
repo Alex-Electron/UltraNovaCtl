@@ -100,9 +100,12 @@ Reported on channel 4 (`B3 <n> <value>`), and only after the host sends `BF 04 0
 | Index | Control |
 |---:|---|
 | 1 | modulation wheel |
+| 3 | expression pedal (TRS pot on the rear jack) |
+| 4 | sustain pedal (two-pole footswitch on the rear jack) |
 
 Pitch bend, aftertouch and notes do **not** come this way — they stay on MIDI port 1
 (interface IF1) and are readable there even while the instrument is in Automap mode.
+The window still shows them on the same row so the five analog tiles stay together.
 
-Expression and sustain pedals are wired to the rear jacks: sustain is a simple
-tip-to-sleeve switch, expression a potentiometer on a TRS jack.
+Expression is a continuous pedal. Sustain is a switch: same press/release path as a
+panel button.

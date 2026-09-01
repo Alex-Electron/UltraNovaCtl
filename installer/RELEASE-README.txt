@@ -1,4 +1,4 @@
-UltraNovaCtl 1.1.1 — Automap replacement for the Novation UltraNova
+UltraNovaCtl 1.2.0 — Automap replacement for the Novation UltraNova
 https://github.com/Alex-Electron/UltraNovaCtl
 
 Nothing to install. Unpack anywhere and run UltraNovaCtl.exe.

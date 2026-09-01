@@ -95,8 +95,10 @@ follow what each button is set to do.*
 | | |
 |---|---|
 | Control Change | any controller, any channel, with a working range |
+| CC 14-bit, NRPN, RPN | 14-bit parameters |
 | Note On/Off | picked by name, `Note 042 (F#1)` |
 | Pitch Bend | full 14-bit |
+| Aftertouch, Program Change | channel pressure, or a program number |
 | Keystroke | any key combination, typed into the focused window |
 | Transport | Start / Stop / Continue, and MMC play, stop, pause, record, record exit, fast forward, rewind, return to zero |
 | Disabled | leaves the control alone |
@@ -106,7 +108,11 @@ Complement, Signed Bit, Signed Bit 2, Binary Offset). Buttons: Momentary, Normal
 and Step with any number of positions.
 
 **Banks and pages** — four banks reached from the panel's USER, FX, INST and MIXER buttons,
-each with as many pages as you like, stepped with the panel's page buttons.
+each with as many pages as you like, stepped with the panel's page buttons. Encoder values
+are remembered per page. Assigned wheels and pedals have optional **pickup**, so a page
+change does not dump the physical position onto the new mapping.
+
+**One instance.** A second launch raises the window that is already running.
 
 **Feedback on the instrument** — labels and live values on the synth's own display, rings
 lit under the encoders you touch, the active bank lit on its button, page buttons lit only
@@ -148,7 +154,7 @@ Three things, and one thing to get out of the way.
 1. Start **loopMIDI** and make a port.
 2. Start your **DAW** — after the port exists. Live builds its device list once, at startup.
 3. Run **`UltraNovaCtl.exe`** and pick the port under **MIDI out**.
-4. Press **AUTOMAP** on the instrument. The status line reads `connected to UltraNova` and
+4. Press **AUTOMAP** on the instrument. The window title reads `connected` and
    the display fills with labels.
 5. In the DAW, enable the loopMIDI port as an input and tick both **Remote** and **Track**.
 
@@ -289,9 +295,7 @@ Build instructions: [docs/BUILD.md](docs/BUILD.md). Short version: `dotnet build
 
 ## Roadmap
 
-Start with Windows, an installer that sets up the virtual port, mass clear and revert of
-assignments, pickup for wheels and pedals, drag-and-drop to swap assignments, MIDI clock
-output.
+Drag-and-drop to swap assignments, MIDI clock output.
 
 ---
 

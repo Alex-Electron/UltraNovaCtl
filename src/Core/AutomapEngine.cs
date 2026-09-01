@@ -33,6 +33,10 @@ public sealed class AnalogEventArgs : EventArgs
 {
     public int Code;
     public int Value;
+    /// <summary>True while pickup is waiting for the wheel to match the last sent value.</summary>
+    public bool Pickup;
+    /// <summary>The page value to catch, valid while Pickup is true.</summary>
+    public int Catch;
 }
 
 public sealed class KeyboardStateEventArgs : EventArgs
@@ -54,6 +58,20 @@ public sealed class AutomapEngine : IDisposable
     public const int FieldWidth = 9;
     public const int DisplayWidth = 72;
 
+    /// <summary>
+    /// Panel sections for lamp probes. Lighting every lamp at once sags the rail;
+    /// these groups are small enough to try one bank at a time.
+    /// </summary>
+    static readonly (string name, int[] codes)[] LampGroups =
+    {
+        ("row",    new[] { 0, 1, 2, 3, 4, 5, 6, 7 }),
+        ("mode",   new[] { 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18 }),
+        ("edit",   new[] { 19, 20, 21, 22, 23, 24, 25, 26, 27 }),
+        ("arp",    new[] { 28, 29, 30, 31, 32, 33, 34, 35 }),
+        ("select", new[] { 36, 37, 38, 39, 40, 41 }),
+        ("rings",  new[] { 42, 43, 44, 45, 46, 47, 48, 49 }),
+    };
+
     static readonly byte[] ModeOn = { 0xF0, 0x00, 0x01, 0xF7 };
     static readonly byte[] ModeOff = { 0xF0, 0x00, 0x00, 0xF7 };
 
@@ -68,10 +86,27 @@ public sealed class AutomapEngine : IDisposable
     public event EventHandler<MidiInEventArgs> PortMidi;
     public event EventHandler<string> Log;
 
+    MidiClockMeter _clock;
+    MidiClockMeter Clock => _clock ??= new MidiClockMeter(Say, "midi: ");
+
     readonly int[] _values = new int[EncoderCount];
     readonly bool[] _touched = new bool[EncoderCount];
     readonly Dictionary<int, bool> _toggles = new();
     readonly Dictionary<int, int> _steps = new();
+    readonly Dictionary<int, bool> _analogDown = new();
+    readonly Dictionary<int, int> _analogRaw = new();
+    readonly Dictionary<int, AnalogPickup> _analogPick = new();
+    readonly Dictionary<int, long> _analogStreamMs = new();
+    readonly object _analogLock = new();
+
+    struct AnalogPickup
+    {
+        public bool Armed;
+        public int CatchScaled;
+        public int SnapshotRaw;
+        /// <summary>Scaled position when pickup was armed. int.MinValue = not yet seen.</summary>
+        public int OriginScaled;
+    }
     readonly List<MidiOut> _outs = new();
     readonly object _writeLock = new();
 
@@ -79,6 +114,12 @@ public sealed class AutomapEngine : IDisposable
     IntPtr _midiPin = IntPtr.Zero;      // Port 1: notes, wheels, aftertouch
     Thread _reader, _painter, _midiReader;
     volatile bool _stop;
+    volatile bool _demo;
+    volatile bool _demoHold;
+    volatile bool _demoQueued;
+    volatile int _demoConcurrent = PanelLamps.MaxAtOnce;
+    string _demoRunId = "hello";
+    int _demoRunMs = PanelLamps.HelloMs;
 
     // Display updates are slow (a USB write each), so they never happen on the read
     // thread. Pending redraws collapse per field: turning a knob fast repaints once
@@ -92,6 +133,19 @@ public sealed class AutomapEngine : IDisposable
     public int PageIndex { get; private set; }
     public bool Connected { get; private set; }
     public bool AutomapActive { get; private set; }
+    public bool DemoRunning => _demo;
+
+    /// <summary>
+    /// Ceiling on how many lamps Demo lights together. Hardware starts pumping
+    /// the analogue output at 14. Not saved. Clamped to <see cref="PanelLamps.MaxAtOnce"/>.
+    /// </summary>
+    public int DemoConcurrent
+    {
+        get => _demoConcurrent;
+        set => _demoConcurrent = Math.Clamp(value, 1, PanelLamps.MaxAtOnce);
+    }
+
+    bool _learnArmed;
 
     /// <summary>Raised when the panel itself changed bank or page, so the UI can follow.</summary>
     public event EventHandler SelectionChanged;
@@ -112,10 +166,11 @@ public sealed class AutomapEngine : IDisposable
         }
     }
 
-    /// <summary>Zero every encoder and repaint, without touching the assignments.</summary>
+    /// <summary>Zero every encoder on this page and repaint, without touching the assignments.</summary>
     public void ResetValues()
     {
         Array.Clear(_values);
+        StashPageEncoders();
         _repaintAll = true;
         _paintWake.Set();
     }
@@ -124,6 +179,18 @@ public sealed class AutomapEngine : IDisposable
         encoder >= 0 && encoder < EncoderCount ? _values[encoder] : 0;
 
     void Say(string s) => Log?.Invoke(this, s);
+
+    /// <summary>
+    /// Display paint (F0 02 …) and the Automap handshake are already accounted for
+    /// elsewhere; everything else belongs in the log.
+    /// </summary>
+    void NoteSysEx(string prefix, byte[] sx)
+    {
+        if (sx == null || sx.Length == 0) return;
+        if (sx.Length >= 2 && sx[1] == 0x02) return;
+        if (sx.Length == 4 && sx[1] == 0x00) return;
+        Say(prefix + ": " + MidiNames.SysEx(sx));
+    }
 
     // ---- lifecycle ---------------------------------------------------------
 
@@ -268,6 +335,7 @@ public sealed class AutomapEngine : IDisposable
             catch { /* going down anyway */ }
         }
 
+        _demo = false;
         _stop = true;
         Connected = false;
         AutomapActive = false;
@@ -367,7 +435,7 @@ public sealed class AutomapEngine : IDisposable
     /// </summary>
     public void BlinkLed(int code, int times = 3, int onMs = 110, int offMs = 90)
     {
-        if (!AutomapActive || code < 0) return;
+        if (_demoHold || !AutomapActive || code < 0) return;
 
         var t = new Thread(() =>
         {
@@ -394,6 +462,372 @@ public sealed class AutomapEngine : IDisposable
 
     /// <summary>Light or clear one panel LED. Codes match the button codes.</summary>
     public void SetLed(int code, bool on) => Write(new byte[] { 0xB0, (byte)code, (byte)(on ? 1 : 0) });
+
+    /// <summary>
+    /// Play the selected button-show. Stops on a second press, on leaving Automap,
+    /// or when the process goes down.
+    /// </summary>
+    public void ToggleDemo()
+    {
+        if (_demo) { _demo = false; _demoQueued = false; return; }
+        StartDemo("film", PanelLamps.ShowMs);
+    }
+
+    /// <summary>
+    /// Debug tools just came on: play the 1 s hello if Automap is already live,
+    /// otherwise wait and run it after the 0.7 s entry wave.
+    /// </summary>
+    public void QueueDemo()
+    {
+        _demoQueued = true;
+        if (_demo) return;
+        if (Connected && AutomapActive)
+            StartDemo("hello", PanelLamps.HelloMs);
+    }
+
+    public void CancelQueuedDemo() => _demoQueued = false;
+
+    void StartDemo(string id, int ms)
+    {
+        if (_demo) return;
+        if (!Connected || !AutomapActive)
+        {
+            _demoQueued = true;
+            Say("demo needs the synth in AUTOMAP");
+            return;
+        }
+        if (id == "hello") _demoQueued = false;
+        _demoRunId = string.IsNullOrWhiteSpace(id) ? "film" : id;
+        _demoRunMs = Math.Max(200, ms);
+        _demo = true;
+        _demoHold = true;
+        new Thread(RunDemo) { IsBackground = true, Name = "panel-demo" }.Start();
+    }
+
+    void RunDemo()
+    {
+        _demoHold = true;
+        var lit = new bool[50];
+        var want = new bool[50];
+        var score = new float[50];
+        const int frameMs = 28;
+        string show = _demoRunId ?? "hello";
+        bool hello = show == "hello";
+        int frames = Math.Max(1, _demoRunMs / frameMs);
+        const string name = "Alex.Electron";
+
+        void Want(int code, bool on)
+        {
+            if ((uint)code >= lit.Length) return;
+            if (lit[code] == on) return;
+            lit[code] = on;
+            SetLed(code, on);
+        }
+
+        Say("demo: " + show + " (" + (_demoRunMs / 1000.0).ToString("0.#") + " s)");
+        try
+        {
+            int frame = 0;
+            while (_demo && !_stop && AutomapActive && frame < frames)
+            {
+                float t = frames <= 1 ? 1 : frame / (float)(frames - 1);
+                float sec = frame * frameMs / 1000f;
+                int cap = Math.Clamp(_demoConcurrent, 1, PanelLamps.MaxAtOnce);
+                PanelLamps.Score(show, score, t, sec);
+                PanelLamps.Pick(score, cap, want);
+                for (int c = 0; c < lit.Length; c++)
+                    Want(c, c < want.Length && want[c]);
+
+                // Two full rows, not patches: tearing looked like a slow refresh.
+                // Every 4th lamp frame so the 20 s show has a real LCD film,
+                // not a crawl of one character a second.
+                if (frame % 4 == 0)
+                    PaintDemoLcd(hello ? "debug" : show, name, t, sec);
+                frame++;
+                Thread.Sleep(frameMs);
+            }
+        }
+        finally
+        {
+            _demo = false;
+            _demoHold = false;
+            if (AutomapActive && !_stop)
+            {
+                for (int i = 0; i < lit.Length; i++)
+                    if (lit[i]) SetLed(i, false);
+                LightMode();
+                LightBanks();
+                RefreshRings();
+                DrawLabels();
+                DrawAllValues();
+            }
+            Say("demo ended");
+            if (show == "enter" && _demoQueued && AutomapActive && !_stop)
+                StartDemo("hello", PanelLamps.HelloMs);
+        }
+    }
+
+    /// <summary>
+    /// Isolated USB/lamp probes for the "does the all-flash make a sound" question.
+    /// The GUI watches probe.txt next to the repo or the exe.
+    /// </summary>
+    public void Probe(string spec)
+    {
+        if (!Connected || !AutomapActive)
+        {
+            Say("probe: need AUTOMAP");
+            return;
+        }
+        if (_demo)
+        {
+            Say("probe: stop the demo first");
+            return;
+        }
+        new Thread(() => RunProbe(spec)) { IsBackground = true, Name = "lamp-probe" }.Start();
+    }
+
+    public void ProbeBlocking(string spec) => RunProbe(spec);
+
+    void RunProbe(string spec)
+    {
+        spec = (spec ?? "").Trim();
+        if (spec.Length == 0) return;
+        _demoHold = true;
+        bool touchDisplay = false;
+        Say("probe: " + spec);
+        try
+        {
+            string[] parts = spec.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            string kind = parts[0].ToLowerInvariant();
+            switch (kind)
+            {
+                case "burst":
+                    WaveLamps(Enumerable.Range(0, 50).Where(c => Config.KnownLeds.ContainsKey(c)), 4, 6, 35);
+                    break;
+                case "slow":
+                    WaveLamps(Enumerable.Range(0, 50).Where(c => Config.KnownLeds.ContainsKey(c)), 4, 4, 70);
+                    break;
+                case "all":
+                    BurstLamps(Enumerable.Range(0, 50).Where(c => Config.KnownLeds.ContainsKey(c)), 4, 0);
+                    break;
+                case "groups":
+                    ProbeGroups(null);
+                    break;
+                case "group":
+                    if (parts.Length > 1) ProbeGroups(parts[1]);
+                    else Say("probe: group needs a name (row|mode|edit|arp|select|rings)");
+                    break;
+                case "display":
+                    touchDisplay = true;
+                    for (int i = 0; i < 4; i++)
+                    {
+                        DisplayWrite(0, 0, new string('#', DisplayWidth));
+                        DisplayWrite(1, 0, new string('#', DisplayWidth));
+                        Thread.Sleep(80);
+                        DisplayWrite(0, 0, new string(' ', DisplayWidth));
+                        DisplayWrite(1, 0, new string(' ', DisplayWidth));
+                        Thread.Sleep(220);
+                    }
+                    break;
+                case "rings":
+                    BurstLamps(Enumerable.Range(RingLedBase, 8), 4, 0);
+                    break;
+                case "audio":
+                    FlashLamp(8, 4);
+                    break;
+                case "vocoder":
+                    FlashLamp(27, 4);
+                    break;
+                case "arp":
+                    FlashLamp(28, 4);
+                    break;
+                case "filter":
+                    FlashLamp(7, 4);
+                    FlashLamp(23, 4);
+                    break;
+                case "cc":
+                    foreach (int c in new[] { 1, 7, 11 }) FlashLamp(c, 4);
+                    break;
+                case "code":
+                    if (parts.Length > 1 && int.TryParse(parts[1], out int code))
+                        FlashLamp(code, 4);
+                    else
+                        Say("probe: code needs a number");
+                    break;
+                default:
+                    Say("probe: unknown (burst|slow|all|groups|group NAME|display|rings|audio|vocoder|arp|filter|cc|code N)");
+                    break;
+            }
+        }
+        finally
+        {
+            _demoHold = false;
+            if (AutomapActive && !_stop)
+            {
+                LightMode();
+                LightBanks();
+                RefreshRings();
+                // Lamp-only probes must not touch the LCD: the previous display
+                // probe already showed SysEx paint is silent, and a redraw here
+                // mixed the two on the same trial.
+                if (touchDisplay)
+                {
+                    DrawLabels();
+                    DrawAllValues();
+                }
+            }
+            Say("probe done — heard a sound?");
+        }
+    }
+
+    void ProbeGroups(string only)
+    {
+        bool any = false;
+        foreach (var g in LampGroups)
+        {
+            if (only != null && !g.name.Equals(only, StringComparison.OrdinalIgnoreCase))
+                continue;
+            any = true;
+            Say("probe group: " + g.name + " (" + g.codes.Length + " lamps)");
+            BurstLamps(g.codes, 2, 0);
+            Thread.Sleep(500);
+        }
+        if (!any) Say("probe: no group named " + only);
+    }
+
+    void BurstLamps(IEnumerable<int> codes, int times, int gapMs)
+    {
+        int[] list = codes.ToArray();
+        for (int t = 0; t < times; t++)
+        {
+            foreach (int c in list) { SetLed(c, true); if (gapMs > 0) Thread.Sleep(gapMs); }
+            Thread.Sleep(80);
+            foreach (int c in list) { SetLed(c, false); if (gapMs > 0) Thread.Sleep(gapMs); }
+            Thread.Sleep(220);
+        }
+    }
+
+    /// <summary>
+    /// Walk a short bar along the lamps so the panel never has more than
+    /// <paramref name="width"/> LEDs on. All-on sags the rail (LCD dims, analog whip).
+    /// </summary>
+    void WaveLamps(IEnumerable<int> codes, int times, int width, int stepMs)
+    {
+        int[] list = codes.ToArray();
+        int n = list.Length;
+        if (n == 0) return;
+        if (width < 1) width = 1;
+        var on = new bool[n];
+        void Want(int i, bool v)
+        {
+            if (on[i] == v) return;
+            on[i] = v;
+            SetLed(list[i], v);
+        }
+
+        for (int t = 0; t < times; t++)
+        {
+            for (int pos = 0; pos <= n + width; pos++)
+            {
+                for (int i = 0; i < n; i++)
+                    Want(i, i >= pos - width && i < pos);
+                Thread.Sleep(stepMs);
+            }
+            Thread.Sleep(150);
+        }
+        for (int i = 0; i < n; i++) Want(i, false);
+    }
+
+    void FlashLamp(int code, int times)
+    {
+        for (int t = 0; t < times; t++)
+        {
+            SetLed(code, true);
+            Thread.Sleep(80);
+            SetLed(code, false);
+            Thread.Sleep(220);
+        }
+    }
+
+    /// <summary>
+    /// A 20 s LCD film in four acts, always two complete 72-char rows so the
+    /// display never paints in torn strips. Nickname stays centred.
+    /// </summary>
+    void PaintDemoLcd(string show, string name, float t, float sec)
+    {
+        if (show is "enter" or "hello" or "debug")
+        {
+            DisplayWrite(0, 0, Centre(name, DisplayWidth));
+            DisplayWrite(1, 0, Centre(show == "enter" ? "automap" : show, DisplayWidth));
+            return;
+        }
+
+        const string pal = " .:-=+*#";
+        var r0 = new char[DisplayWidth];
+        var r1 = new char[DisplayWidth];
+        int act = t < 0.18f ? 0 : t < 0.42f ? 1 : t < 0.78f ? 2 : 3;
+
+        if (act == 0)
+        {
+            int beam = (int)(sec * 48 % (DisplayWidth + 10)) - 5;
+            for (int x = 0; x < DisplayWidth; x++)
+            {
+                int d = Math.Abs(x - beam);
+                r0[x] = d < 2 ? '#' : d < 5 ? '=' : d < 9 ? '-' : '.';
+                r1[x] = d < 1 ? '#' : d < 4 ? '=' : '.';
+            }
+        }
+        else if (act == 1)
+        {
+            for (int x = 0; x < DisplayWidth; x++)
+            {
+                double v0 = 0.5 + 0.5 * Math.Sin(x * 0.31 + sec * 6.2);
+                double v1 = 0.5 + 0.5 * Math.Sin(x * 0.27 - sec * 5.1 + 1.7);
+                r0[x] = pal[(int)(v0 * (pal.Length - 1))];
+                r1[x] = pal[(int)(v1 * (pal.Length - 1))];
+            }
+        }
+        else if (act == 2)
+        {
+            int tick = (int)(sec * 11);
+            for (int x = 0; x < DisplayWidth; x++)
+            {
+                uint n = unchecked((uint)((x + 3) * 2654435761u + (uint)tick * 97u));
+                n ^= n >> 16;
+                r0[x] = (n & 15) == 0 ? '*' : (n & 7) == 0 ? '+' : '.';
+                n ^= (uint)(x * 17 + tick);
+                r1[x] = (n & 15) == 0 ? '*' : (n & 11) == 0 ? ':' : ' ';
+            }
+        }
+        else
+        {
+            const string banner = "  * UltraNovaCtl *  -=+*#  ";
+            int off = (int)(sec * 14) % banner.Length;
+            int fill = (int)(t * DisplayWidth);
+            for (int x = 0; x < DisplayWidth; x++)
+            {
+                r0[x] = banner[(off + x) % banner.Length];
+                r1[x] = x < fill ? '#' : (x == fill ? '>' : ' ');
+            }
+        }
+
+        string title = show is "debug" or "hello" or "enter" ? show : PanelLamps.ActName(t);
+        Stamp(r0, " " + name + " ");
+        Stamp(r1, " " + title + " ");
+        DisplayWrite(0, 0, new string(r0));
+        DisplayWrite(1, 0, new string(r1));
+    }
+
+    static void Stamp(char[] row, string text)
+    {
+        if (text == null || row.Length == 0) return;
+        int at = (row.Length - text.Length) / 2;
+        for (int i = 0; i < text.Length; i++)
+        {
+            int x = at + i;
+            if ((uint)x < (uint)row.Length) row[x] = text[i];
+        }
+    }
 
     static string Centre(string s, int width)
     {
@@ -451,6 +885,7 @@ public sealed class AutomapEngine : IDisposable
         // Always open the wheel and pedal stream. Gating it on "is anything assigned"
         // was a trap: nothing could be seen until it was assigned, and nobody assigns a
         // control they cannot watch move.
+        ArmAnalogPickup();
         EnableAnalog(true);
         Thread.Sleep(3);
         _repaintAll = true;
@@ -481,11 +916,11 @@ public sealed class AutomapEngine : IDisposable
         {
             for (int i = 0; i < 12; i++)
             {
-                if (_stop || !AutomapActive) return;
+                if (_stop || !AutomapActive || _demoHold) return;
                 LightMode();
                 Thread.Sleep(40);
             }
-            if (_stop || !AutomapActive) return;
+            if (_stop || !AutomapActive || _demoHold) return;
             LightMode();
             LightBanks();
             RefreshRings();
@@ -517,7 +952,13 @@ public sealed class AutomapEngine : IDisposable
         // lamp that is dark should mean the button does nothing.
         int clamped = Math.Clamp(index, 0, bank.Pages.Count - 1);
         if (clamped == PageIndex && index != PageIndex) return;
-        PageIndex = clamped;
+        lock (_analogLock)
+        {
+            StashPageEncoders();
+            PageIndex = clamped;
+            RestorePageEncoders();
+            ArmAnalogPickupUnlocked();
+        }
         Say($"{bank.Name}: page {PageIndex + 1}/{bank.Pages.Count} — {CurrentPage.Name}");
         LightBanks();
         Refresh();
@@ -526,11 +967,101 @@ public sealed class AutomapEngine : IDisposable
     public void SetBank(int index)
     {
         if (Config.Banks.Count == 0) return;
-        BankIndex = ((index % Config.Banks.Count) + Config.Banks.Count) % Config.Banks.Count;
-        PageIndex = 0;
+        lock (_analogLock)
+        {
+            StashPageEncoders();
+            BankIndex = ((index % Config.Banks.Count) + Config.Banks.Count) % Config.Banks.Count;
+            PageIndex = 0;
+            RestorePageEncoders();
+            ArmAnalogPickupUnlocked();
+        }
         Say($"bank {CurrentBank.Name}");
         LightBanks();
         Refresh();
+    }
+
+    void StashPageEncoders()
+    {
+        CurrentPage.LiveEncoders = (int[])_values.Clone();
+    }
+
+    void RestorePageEncoders()
+    {
+        var stored = CurrentPage.LiveEncoders;
+        if (stored != null && stored.Length >= EncoderCount)
+            Array.Copy(stored, _values, EncoderCount);
+        else
+            Array.Clear(_values);
+    }
+
+    /// <summary>
+    /// After a page or bank change, wheels and pedals wait until the physical
+    /// position matches the value last sent on this page. First visit has no
+    /// stored value, so they send immediately. Sustain is a switch and is left
+    /// alone. Silent rows and pickup-off rows are not armed.
+    /// </summary>
+    public void ArmAnalogPickup(int? only = null)
+    {
+        lock (_analogLock) ArmAnalogPickupUnlocked(only);
+    }
+
+    void ArmAnalogPickupUnlocked(int? only = null)
+    {
+        foreach (var (code, _, _) in Config.AnalogControls)
+        {
+            if (only is int want && want != code) continue;
+            if (Config.IsAnalogSwitch(code)) continue;
+            Mapping m = null;
+            CurrentPage.Analog?.TryGetValue(code.ToString(), out m);
+            if (m == null || m.Silent || m.Relative || !m.PickupEnabled || m.LastValue < 0)
+            {
+                _analogPick.Remove(code);
+                continue;
+            }
+            int raw = _analogRaw.GetValueOrDefault(code, -1);
+            int origin = raw < 0 ? int.MinValue : m.Scale(raw);
+            if (origin != int.MinValue && Math.Abs(origin - m.LastValue) <= 2)
+            {
+                _analogPick.Remove(code);
+                continue;
+            }
+            _analogPick[code] = new AnalogPickup
+            {
+                Armed = true,
+                CatchScaled = m.LastValue,
+                SnapshotRaw = raw,
+                OriginScaled = origin,
+            };
+        }
+    }
+
+    /// <summary>True while this analog control is holding for pickup on the current page.</summary>
+    public bool AnalogPickupArmed(int code)
+    {
+        lock (_analogLock)
+            return _analogPick.TryGetValue(code, out var p) && p.Armed;
+    }
+
+    /// <summary>Last physical reading, or -1 if this control has not spoken yet.</summary>
+    public int AnalogPhysical(int code)
+    {
+        lock (_analogLock)
+            return _analogRaw.GetValueOrDefault(code, -1);
+    }
+
+    /// <summary>The page value pickup is catching, if armed.</summary>
+    public bool AnalogPickupState(int code, out int catchAt)
+    {
+        lock (_analogLock)
+        {
+            if (_analogPick.TryGetValue(code, out var p) && p.Armed)
+            {
+                catchAt = p.CatchScaled;
+                return true;
+            }
+            catchAt = -1;
+            return false;
+        }
     }
 
     /// <summary>Repaint the synth display and tell the UI the selection moved.</summary>
@@ -548,22 +1079,41 @@ public sealed class AutomapEngine : IDisposable
     /// </summary>
     public void LightBanks()
     {
-        if (!Config.LightBankButtons || !AutomapActive) return;
+        if (_demoHold || !AutomapActive) return;
 
-        foreach (var b in Config.Banks)
-            if (b.SelectButton >= 0)
-                SetLed(b.SelectButton, ReferenceEquals(b, CurrentBank));
+        if (Config.LightBankButtons)
+        {
+            foreach (var b in Config.Banks)
+                if (b.SelectButton >= 0)
+                    SetLed(b.SelectButton, ReferenceEquals(b, CurrentBank));
 
-        // Lit only where there is somewhere to go, as the guide describes for these
-        // buttons: they "illuminate to indicate that additional pages are available".
-        SetLed(Config.BtnPagePrev, PageIndex > 0);
-        SetLed(Config.BtnPageNext, PageIndex < CurrentBank.Pages.Count - 1);
+            // Lit only where there is somewhere to go, as the guide describes for these
+            // buttons: they "illuminate to indicate that additional pages are available".
+            SetLed(Config.BtnPagePrev, PageIndex > 0);
+            SetLed(Config.BtnPageNext, PageIndex < CurrentBank.Pages.Count - 1);
+        }
+        LightLearn();
+    }
+
+    /// <summary>
+    /// LEARN's lamp follows the app's learn mode, not a finger on the button. In
+    /// Automap the synth no longer drives that lamp itself.
+    /// </summary>
+    public void SetLearnArmed(bool on)
+    {
+        _learnArmed = on;
+        LightLearn();
+    }
+
+    void LightLearn()
+    {
+        if (AutomapActive) SetLed(Config.BtnLearn, _learnArmed);
     }
 
     /// <summary>Queue a field for redraw without blocking the caller.</summary>
     void Invalidate(int enc)
     {
-        if (!AutomapActive) return;    // synth is in SYNTH mode; its display is its own
+        if (_demoHold || !AutomapActive) return;    // synth is in SYNTH mode; its display is its own
         if (enc < 0 || enc > 7) return;
         _dirty[enc] = true;
         _paintWake.Set();
@@ -576,7 +1126,7 @@ public sealed class AutomapEngine : IDisposable
             _paintWake.WaitOne(50);
             if (_stop) return;
 
-            if (!AutomapActive) continue;
+            if (!AutomapActive || _demoHold) continue;
 
             if (_repaintAll)
             {
@@ -690,7 +1240,26 @@ public sealed class AutomapEngine : IDisposable
                 while (pending.Count > 0)
                 {
                     byte b = pending[0];
-                    if (b >= 0xF8) { pending.RemoveAt(0); continue; }   // real-time
+                    if (b >= 0xF8)
+                    {
+                        pending.RemoveAt(0);
+                        Clock.Realtime(b);
+                        continue;
+                    }
+                    if (b == 0xF0)
+                    {
+                        int end = pending.IndexOf(0xF7);
+                        if (end < 0)
+                        {
+                            if (pending.Count > 65536) pending.Clear();
+                            break;
+                        }
+                        var sx = pending.GetRange(0, end + 1).ToArray();
+                        pending.RemoveRange(0, end + 1);
+                        status = 0;
+                        NoteSysEx("midi", sx);
+                        continue;
+                    }
                     if (b >= 0xF0) { pending.RemoveAt(0); status = 0; continue; }
                     if (b >= 0x80) { status = b; pending.RemoveAt(0); continue; }
                     if (status == 0) { pending.RemoveAt(0); continue; }
@@ -700,6 +1269,9 @@ public sealed class AutomapEngine : IDisposable
                     byte d1 = pending[0];
                     byte d2 = need > 1 ? pending[1] : (byte)0;
                     pending.RemoveRange(0, need);
+                    // Mod wheel / pitch / aftertouch ride this port as well as (or
+                    // instead of) the Automap analog stream. Same pickup path as B3.
+                    OnPortMidiAnalog(status, d1, d2);
                     PortMidi?.Invoke(this, new MidiInEventArgs
                     { Status = status, Data1 = d1, Data2 = d2 });
                 }
@@ -724,6 +1296,7 @@ public sealed class AutomapEngine : IDisposable
                 var sx = buf.GetRange(0, end + 1).ToArray();
                 buf.RemoveRange(0, end + 1);
                 if (sx.Length == 4 && sx[1] == 0x00) OnMode(sx[2] == 0x01);
+                else NoteSysEx("automap", sx);
                 continue;
             }
             if (st < 0x80) { buf.RemoveAt(0); continue; }
@@ -749,13 +1322,23 @@ public sealed class AutomapEngine : IDisposable
         AutomapActive = on;
         if (!changed)
         {
-            if (on) LightMode();
+            if (on && !_demoHold) LightMode();
             return;
         }
 
         ModeChanged?.Invoke(this, on);
 
-        if (on) { Initialise(); return; }
+        if (on)
+        {
+            Initialise();
+            if (!_demo)
+                StartDemo("enter", PanelLamps.EnterMs);
+            return;
+        }
+
+        _demo = false;
+        // Keep _demoQueued: leaving Automap for a moment should still play
+        // the show when the synth comes back, if debug asked for it.
 
         // Leaving Automap: stop painting at once and acknowledge the way the original
         // server did - a burst of the one-way context ticks on channel 16. Writing to
@@ -773,7 +1356,10 @@ public sealed class AutomapEngine : IDisposable
             case 1: OnEncoder(d1, d2 > 63 ? d2 - 128 : d2); break;
             case 2: OnTouch(d1, d2 != 0); break;
             case 3: OnButton(d1, d2 != 0); break;
-            case 4: OnAnalog(d1, d2); break;
+            case 4:
+                lock (_analogLock) _analogStreamMs[d1] = Environment.TickCount64;
+                OnAnalog(d1, d2);
+                break;
             case 16:
                 KeyboardState?.Invoke(this, new KeyboardStateEventArgs
                 { Register = d1, Value = d2 });
@@ -795,7 +1381,7 @@ public sealed class AutomapEngine : IDisposable
         {
             // Relative passes the movement through untouched: the synth already encodes
             // it two's complement, which is the same encoding DAWs expect.
-            if (m.Relative) SendRelative(m, delta);
+            if (m.Relative && m.Send is "cc") SendRelative(m, delta);
             else SendMapped(m, m.Scale(_values[index]));
         }
         EncoderMoved?.Invoke(this, new EncoderEventArgs
@@ -823,17 +1409,11 @@ public sealed class AutomapEngine : IDisposable
 
         if (pressed)
         {
-            // The panel's own mode buttons pick the bank, exactly as they did in Automap.
+            // Navigation still happens; a mapping on the debug bench is extra MIDI on top.
             int bank = Config.Banks.FindIndex(b => b.SelectButton == code);
-            if (bank >= 0) { SetBank(bank); return; }
-
-            if (code == Config.BtnPageNext) { SetPage(PageIndex + 1); return; }
-            if (code == Config.BtnPagePrev) { SetPage(PageIndex - 1); return; }
-        }
-        else if (Config.Banks.Exists(b => b.SelectButton == code)
-                 || code == Config.BtnPageNext || code == Config.BtnPagePrev)
-        {
-            return;    // release of a navigation button carries no meaning
+            if (bank >= 0) SetBank(bank);
+            else if (code == Config.BtnPageNext) SetPage(PageIndex + 1);
+            else if (code == Config.BtnPagePrev) SetPage(PageIndex - 1);
         }
 
         var page = CurrentPage;
@@ -879,13 +1459,129 @@ public sealed class AutomapEngine : IDisposable
             o.Send((byte)(0xB0 | ch), (byte)m.Number, (byte)Math.Clamp(v, 0, 127));
     }
 
-    /// <summary>Wheels and pedals: absolute position, straight through the mapping.</summary>
+    /// <summary>
+    /// Wheels and aftertouch on the synth's own MIDI port. Ignored when the Automap
+    /// analog stream already reported the same control a moment ago, so a wheel that
+    /// appears on both paths is not sent twice.
+    /// </summary>
+    void OnPortMidiAnalog(byte status, byte d1, byte d2)
+    {
+        int kind = status & 0xF0;
+        int code = -1, value = d2;
+        if (kind == 0xE0) { code = 2; value = ((d2 << 7) | d1) >> 7; }
+        else if (kind == 0xD0) { code = 5; value = d1; }
+        else if (kind == 0xB0)
+            code = d1 switch { 1 => 1, 11 => 3, 64 => 4, _ => -1 };
+        if (code < 0) return;
+        lock (_analogLock)
+        {
+            if (Environment.TickCount64 - _analogStreamMs.GetValueOrDefault(code) < 80)
+                return;
+        }
+        OnAnalog(code, value);
+    }
+
+    /// <summary>
+    /// Wheels and the expression pedal: absolute position. Sustain is a footswitch,
+    /// so it uses the same press/release path as a panel button — including toggle
+    /// and keystroke — and only fires when the contact actually changes.
+    /// </summary>
     void OnAnalog(int code, int value)
     {
-        var page = CurrentPage;
-        if (page.Analog != null && page.Analog.TryGetValue(code.ToString(), out var m) && !m.Silent)
-            SendMapped(m, m.Scale(value));
-        AnalogMoved?.Invoke(this, new AnalogEventArgs { Code = code, Value = value });
+        bool pickup = false;
+        int catchAt = -1;
+        lock (_analogLock)
+        {
+            _analogRaw[code] = value;
+
+            var page = CurrentPage;
+            Mapping m = null;
+            page.Analog?.TryGetValue(code.ToString(), out m);
+
+            if (Config.IsAnalogSwitch(code))
+            {
+                bool pressed = value >= 64;
+                if (!_analogDown.TryGetValue(code, out bool was) || was != pressed)
+                {
+                    _analogDown[code] = pressed;
+                    if (m != null && !m.Silent)
+                        SendSwitch(m, 2000 + code, pressed);
+                }
+            }
+            else if (m != null && !m.Silent)
+            {
+                int scaled = m.Scale(value);
+                if (m.Relative || !m.PickupEnabled)
+                {
+                    SendMapped(m, scaled);
+                    m.LastValue = scaled;
+                }
+                else if (!HoldOrCatchAnalog(code, m, value, scaled, out pickup))
+                {
+                    SendMapped(m, scaled);
+                    m.LastValue = scaled;
+                }
+                if (pickup && _analogPick.TryGetValue(code, out var pk))
+                    catchAt = pk.CatchScaled;
+            }
+        }
+
+        AnalogMoved?.Invoke(this, new AnalogEventArgs
+        { Code = code, Value = value, Pickup = pickup, Catch = catchAt });
+    }
+
+    /// <summary>
+    /// Soft takeover. Returns true when this reading was consumed (held or caught).
+    /// False means pickup is off and the caller should send. A missing pickup
+    /// record with no stored page value sends; with a stored value it holds.
+    /// </summary>
+    bool HoldOrCatchAnalog(int code, Mapping m, int value, int scaled, out bool pickup)
+    {
+        pickup = false;
+        if (!_analogPick.TryGetValue(code, out var pk))
+        {
+            if (m.LastValue < 0) return false;
+            pk = new AnalogPickup
+            {
+                Armed = true,
+                CatchScaled = m.LastValue,
+                SnapshotRaw = value,
+                OriginScaled = scaled,
+            };
+            _analogPick[code] = pk;
+            pickup = true;
+            return true;
+        }
+        if (!pk.Armed) return false;
+
+        if (pk.OriginScaled == int.MinValue || pk.SnapshotRaw < 0)
+        {
+            pk.SnapshotRaw = value;
+            pk.OriginScaled = scaled;
+            _analogPick[code] = pk;
+            pickup = true;
+            return true;
+        }
+
+        bool crossed;
+        if (pk.OriginScaled < pk.CatchScaled)
+            crossed = scaled >= pk.CatchScaled;
+        else if (pk.OriginScaled > pk.CatchScaled)
+            crossed = scaled <= pk.CatchScaled;
+        else
+            crossed = Math.Abs(value - pk.SnapshotRaw) >= 3;
+
+        if (!crossed)
+        {
+            pickup = true;
+            return true;
+        }
+
+        pk.Armed = false;
+        _analogPick[code] = pk;
+        SendMapped(m, scaled);
+        m.LastValue = scaled;
+        return true;
     }
 
     /// <summary>
@@ -943,7 +1639,7 @@ public sealed class AutomapEngine : IDisposable
             var cmd = Transport.Find(m.TransportCommand);
             if (cmd == null) { Say("no transport command chosen"); return null; }
             foreach (var o in _outs) o.SendRaw(cmd.Bytes);
-            Say("transport: " + cmd.Label);
+            Say("transport: " + cmd.Label + " · " + MidiNames.SysEx(cmd.Bytes));
             return 1;
         }
 
@@ -1018,9 +1714,60 @@ public sealed class AutomapEngine : IDisposable
                     o.Send((byte)(0xE0 | ch), (byte)(wide & 0x7F), (byte)((wide >> 7) & 0x7F));
                 break;
 
+            case "aftertouch":
+                foreach (var o in _outs)
+                    o.Send((byte)(0xD0 | ch), (byte)value, 0);
+                break;
+
+            case "program":
+                foreach (var o in _outs)
+                    o.Send((byte)(0xC0 | ch), (byte)value, 0);
+                break;
+
+            case "nrpn":
+                SendRegistered(ch, 99, 98, m.Number, value);
+                break;
+
+            case "rpn":
+                SendRegistered(ch, 101, 100, m.Number, value);
+                break;
+
+            case "cc14":
+                {
+                    int cc = Math.Clamp(m.Number, 0, 31);
+                    int w = value * 16383 / 127;
+                    foreach (var o in _outs)
+                    {
+                        o.Send((byte)(0xB0 | ch), (byte)cc, (byte)((w >> 7) & 0x7F));
+                        o.Send((byte)(0xB0 | ch), (byte)(cc + 32), (byte)(w & 0x7F));
+                    }
+                }
+                break;
+
             default:
                 foreach (var o in _outs) o.Send((byte)(0xB0 | ch), (byte)m.Number, (byte)value);
                 break;
+        }
+    }
+
+    /// <summary>
+    /// NRPN/RPN: select the 14-bit parameter, then data entry as 14-bit too, so LSB
+    /// is not left behind at zero.
+    /// </summary>
+    void SendRegistered(byte ch, byte paramMsbCc, byte paramLsbCc, int param, int value7)
+    {
+        param = Math.Clamp(param, 0, 16383);
+        int data = value7 * 16383 / 127;
+        byte pMsb = (byte)((param >> 7) & 0x7F);
+        byte pLsb = (byte)(param & 0x7F);
+        byte dMsb = (byte)((data >> 7) & 0x7F);
+        byte dLsb = (byte)(data & 0x7F);
+        foreach (var o in _outs)
+        {
+            o.Send((byte)(0xB0 | ch), paramMsbCc, pMsb);
+            o.Send((byte)(0xB0 | ch), paramLsbCc, pLsb);
+            o.Send((byte)(0xB0 | ch), 6, dMsb);
+            o.Send((byte)(0xB0 | ch), 38, dLsb);
         }
     }
 

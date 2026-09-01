@@ -55,7 +55,7 @@ running; the port disappears when it closes.
 
 Two ways, both on [Releases](https://github.com/Alex-Electron/UltraNovaCtl/releases):
 
-**The installer** — `UltraNovaCtl-1.1.1-setup.exe`. Installs into
+**The installer** — `UltraNovaCtl-1.2.0-setup.exe`. Installs into
 `%LOCALAPPDATA%\Programs\UltraNovaCtl` **without asking for administrator rights**, adds a
 Start menu shortcut and an entry in Installed apps, offers to start with Windows, and tells
 you whether the driver and a virtual port are there before it finishes. Per-user on purpose:
@@ -97,7 +97,7 @@ needs it — not for the driver, not for anything.
 4. Pick your port in **MIDI out** at the top.
 5. Press **AUTOMAP** on the instrument.
 
-The status line changes to `connected to UltraNova`, the synth's display fills with labels,
+The window title changes to `connected`, the synth's display fills with labels,
 and the rings under the encoders answer your fingers. In the DAW, enable the loopMIDI port
 as an input and tick both **Remote** and **Track** for it.
 
@@ -106,7 +106,7 @@ Turn encoder 1. The DAW should show CC 21 moving.
 That is the default map: the ten encoders on **channel 1**, CC 21–30 in panel order — the
 eight on 21–28, the filter knob on 29, the patch dial on 30 — and the panel buttons on
 **channel 2**, each one at CC 20 + its button code, so `LOCK` (code 6) is CC 26 and the dial
-push (code 39) is CC 59. Touch, wheels and pedals start disabled. Change any of it as below.
+push (code 39) is CC 59. Touch, mod wheel and pitch bend start disabled. Aftertouch, expression and sustain send. Change any of it as below.
 
 ---
 
@@ -118,7 +118,6 @@ push (code 39) is CC 59. Touch, wheels and pedals start disabled. Change any of 
 
 | Control | What it does |
 |---|---|
-| **Connect / Disconnect** | Connects by itself at startup and keeps retrying. Disconnecting stops that until you press it again. |
 | **MIDI out** | Where mapped controls are sent. Point it at your virtual port. |
 | **Learn in** | Which port to listen to while learning — see §8. |
 | **Test** | Sends CC 21 at 127 then 0. If a monitor sees it and the DAW does not, the DAW's own connection is broken and only the DAW can fix that. |
@@ -127,6 +126,11 @@ push (code 39) is CC 59. Touch, wheels and pedals start disabled. Change any of 
 | **Learn** | Off / On / Latch — see §8. |
 | **Save** | Writes the working configuration, the one loaded at startup. |
 | **Export / Import** | Mapping files. Import also reads Novation `.automap` files. |
+| **USB** | Host session with the synth. Kept open on its own. Click only to force a close. |
+
+The window title is the connection that matters: `connected` when the instrument is in
+AUTOMAP, `not connected` when it is in SYNTH. A second copy of the program raises the
+existing window instead of taking the USB device twice.
 
 ### Second row — the instrument's own state
 
@@ -146,22 +150,40 @@ Whatever you clicked last is shown here, on three tabs: **Parameter**, **Touch**
 ### The control areas
 
 **ENCODERS** — the eight, plus the filter knob and the patch dial. Each shows its label, its
-live value and its assignment. `Zero all` resets the values, not the assignments.
+live value and its assignment. Values are remembered per page. `Zero all` resets the values,
+not the assignments. `Clear` strips every assignment on this bank (all pages). `Revert`
+puts the current page back to the factory map for its bank.
 
 **WHEELS & PEDALS** — modulation wheel, pitch bend, aftertouch, expression and sustain.
+Mod wheel and pitch bend already leave the UltraNova's own MIDI port, so they are
+disabled here by default — assign a CC (or whatever you want) if this program should send
+them. Aftertouch, expression (CC 11) and sustain (CC 64) send; expression is a continuous
+pedal, sustain a footswitch. Live values go in the log only with Debug tools on.
+
+On the **Range** tab, **Pickup** (on by default once the control is assigned) waits after a
+bank or page change until the physical position matches the last value sent on that page.
+The tile shows the live reading, an amber tick at the catch point, and `2 → 100`. There is
+no marker until that control has actually sent on that page — a new page with no assignment
+has nothing to remember. Turn Pickup off to send the current position immediately.
 
 **BUTTONS** — all the assignable panel buttons. `Light buttons when pressed` echoes each
 press on that button's own lamp.
 
-**Reserved for navigation** is collapsed by default. It lists the buttons this program keeps
-for itself (USER / FX / INST / MIXER / PAGE, and LEARN / VIEW until you assign them).
-
 **Debug tools** are off unless you tick them in the tray (or start with `--debug`). That
-session then shows the lamp walker — `Light` / `Clear` / previous / next / `All off` — and
-lets you assign MIDI to LEARN and VIEW. The switch is not saved with the map.
+session then shows LEARN, VIEW, USER / FX / INST / MIXER and the page buttons — they still
+do their jobs, and you can assign MIDI on top — plus the lamp walker (`Light` / `Clear` /
+previous / next / `All off`). Wheel and pedal values are named in the log only while it is
+on. The switch is not saved with the map.
 
-**Log** — everything that happened. Drag the divider to resize it, select text with the
-mouse, `Ctrl+C` or the right-click menu to copy, `Save…` to write the lot to a file.
+**Log** — everything that happened: SysEx, NRPN/RPN (assembled from MSB/LSB), bank select,
+program change, transport Start/Stop/Continue, MMC. Notes, mod wheel, expression and
+sustain stay off the log unless Debug tools is on — they would drown it. MIDI clock is
+counted, not printed tick by tick: about once a second you get `clock: ~120 BPM`. We do
+**not** generate clock; that would fight the DAW for tempo.
+
+The display-paint SysEx is left out for the same reason. Drag the divider to resize the
+log, select text with the mouse, `Ctrl+C` or the right-click menu to copy, `Save…` to
+write the lot to a file.
 
 ---
 
@@ -188,10 +210,15 @@ Press **Save** when you are happy. Nothing is written until you do.
 | Type | What it sends |
 |---|---|
 | **Control Change** | The ordinary one. Any controller, any channel, with a working range. |
+| **CC 14-bit** | MSB on the chosen CC 0–31 and LSB on CC+32, scaled across 0–16383. |
+| **NRPN** | Selects the 14-bit parameter (CC 99/98) then data entry MSB+LSB (CC 6/38). |
+| **RPN** | The same dance on CC 101/100. |
 | **Note On/Off** | Chosen by name, `Note 042 (F#1)`. Buttons play, knobs sweep. |
 | **Pitch Bend** | Full 14-bit, no controller number. |
-| **Keystroke** | Any key combination, typed into whatever window has focus. Click the field and press the keys. Buttons only — a knob would fire on every click of travel. |
-| **Transport** | Start / Stop / Continue as real-time messages, plus MMC play, stop, pause, record, record exit, fast forward, rewind and return to zero. Buttons only. Which family your software obeys depends on the software: real-time drives a sequencer slaved to external clock, MMC is remote control of a DAW's own transport. |
+| **Aftertouch** | Channel pressure, 0–127. |
+| **Program Change** | The control's value is the program number, 0–127. |
+| **Keystroke** | Any key combination, typed into whatever window has focus. Click the field and press the keys. Buttons and the sustain pedal — a knob or the expression pedal would fire on every tick of travel. |
+| **Transport** | Start / Stop / Continue as real-time messages, plus MMC play, stop, pause, record, record exit, fast forward, rewind and return to zero. Buttons and the sustain pedal. Which family your software obeys depends on the software: real-time drives a sequencer slaved to external clock, MMC is remote control of a DAW's own transport. |
 | **Disabled** | Sends nothing, and shows a dash on the synth's display. |
 
 ---
@@ -330,7 +357,7 @@ busy for a while, and that looks exactly like the DAW deciding to stop listening
 | What you see | What it is |
 |---|---|
 | *"Automap is not running"* on the synth's display | Nothing is answering it. Either this program is not connected, or the stock Automap is still running and got there first. |
-| Status stays `not connected` | The Novation driver is missing (§1.1), or the stock Automap has the endpoint (§1.4). |
+| Title stays `not connected` | The instrument is in SYNTH, the Novation driver is missing (§1.1), or the stock Automap has the endpoint (§1.4). |
 | The synth responds but the DAW hears nothing | Press **Test**. If a MIDI monitor sees CC 21 and the DAW does not, the DAW's own port connection is broken — restart the DAW. Nothing here can repair a connection from the outside. |
 | The DAW stopped receiving after restarting this program | The previous instance was killed rather than closed, and the port is still held. Wait, or press **Reinit**. |
 | loopMIDI port is missing from the DAW | The DAW was started before the port existed. Restart the DAW. |
