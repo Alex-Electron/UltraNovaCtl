@@ -894,12 +894,12 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// The order the encoders are shown in, left to right as they sit on the instrument:
-    /// the patch dial, then the filter knob, then the eight under the display. The index
+    /// the patch dial, then the eight under the display, then the filter knob. The index
     /// is still whatever the synth sends - CC 21-28 for the eight, 29 for the filter, 30
     /// for the patch dial - so the numbering is deliberately NOT the panel order, and the
     /// window follows the hardware rather than the numbering.
     /// </summary>
-    static readonly int[] EncoderDisplayOrder = { 9, 8, 0, 1, 2, 3, 4, 5, 6, 7 };
+    static readonly int[] EncoderDisplayOrder = { 9, 0, 1, 2, 3, 4, 5, 6, 7, 8 };
 
     void BuildTiles()
     {
@@ -915,10 +915,10 @@ public partial class MainWindow : Window
             _encoders[i] = tile;
             _encoderRow.Children.Add(tile.Root);
             // Three groups, spaced as they are on the instrument: the patch dial stands
-            // alone, the filter knob stands alone, and the eight under the display are a
-            // tight row.
+            // alone on the left, the eight under the display are a tight row, and the
+            // filter knob stands alone on the right.
             if (i == 9) _encoderRow.Children.Add(new Border { Width = 10 });
-            if (i == 8)
+            if (i == 7)
                 _encoderRow.Children.Add(new Border
                 {
                     Width = 1, Margin = new Thickness(6, 6, 6, 6),

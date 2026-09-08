@@ -157,8 +157,8 @@ Whatever you clicked last is shown here, on three tabs: **Parameter**, **Touch**
 
 ### The control areas
 
-**ENCODERS** — laid out as they sit on the instrument: the patch dial, then the filter
-knob, then the eight under the display. The CC numbering does not follow that order (the
+**ENCODERS** — laid out as they sit on the instrument: the patch dial, then the eight under
+the display, then the filter knob. The CC numbering does not follow that order (the
 eight are 21-28, the filter 29, the dial 30), so the window follows the hardware instead. Each shows its label, its
 live value and its assignment. Values are remembered per page. `Zero all` resets the values,
 not the assignments. `Clear` strips every assignment on this bank (all pages). `Revert`
