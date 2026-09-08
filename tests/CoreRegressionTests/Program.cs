@@ -10,6 +10,9 @@ static class Program
         if (args.Length == 2 && args[0] == "--validate") return ValidateFile(args[1]);
         if (args.Length >= 2 && args[0] == "--dump") return DumpPatch(args);
         if (args.Length >= 3 && args[0] == "--scan") return ScanBank(args);
+        if (args.Length >= 1 && args[0] == "--echo")
+            return EchoProbe(args.Length > 1 && args[1] == "local-off");
+        if (args.Length >= 1 && args[0] == "--locks") return LockProbe();
 
         (string name, Action run)[] tests =
         {
@@ -30,6 +33,9 @@ static class Program
             ("step advances through its positions and wraps", StepAdvancesAndWraps),
             ("nothing is reported delivered without an output", NothingIsDeliveredWithoutAnOutput),
             ("the analog path does not send under the state lock", TheAnalogPathDoesNotSendUnderTheStateLock),
+            ("a held momentary switch is released on a page change", AHeldMomentarySwitchIsReleasedOnAPageChange),
+            ("the instrument-port relay respects the setting and the native editor", KeyboardForwardingRespectsSettingAndNativeEditor),
+            ("the lock probe reads without creating", TheLockProbeReadsWithoutCreating),
             ("releasing notes without a connection is harmless", ReleaseWithoutConnectionIsHarmless),
             ("reopening outputs reports failure instead of throwing", ReopenOutputsReportsFailure),
             ("an unopened output is not usable", UnopenedOutputIsNotUsable),
@@ -211,6 +217,158 @@ static class Program
                     ? "   CHECKSUM ALGORITHM CONFIRMED ON HARDWARE"
                     : "   MISMATCH - the documented algorithm is wrong or incompletely specified");
             }
+        }
+        return 0;
+    }
+
+    /// <summary>
+    /// Report which of Novation's own named locks are held right now. Read-only: each is
+    /// opened, never created, so probing cannot make another process believe the hardware
+    /// is taken.
+    ///
+    ///   --locks
+    /// </summary>
+    static int LockProbe()
+    {
+        foreach (var (name, meaning) in NativeLocks.Known)
+        {
+            bool held = NativeLocks.IsHeld(name);
+            Console.WriteLine($"{(held ? "HELD    " : "free    ")} {name,-32} {meaning}");
+        }
+        return 0;
+    }
+
+    /// <summary>
+    /// Does the instrument put MIDI it receives back onto its own output? That is the
+    /// question behind a feedback loop: if it does, then forwarding the keyboard to a DAW
+    /// which routes anything back to the instrument closes a circle, and no amount of
+    /// careful DAW setup makes the forwarding safe on its own.
+    ///
+    /// Sends a controller (silent) and one short quiet note on the public WinMM pair and
+    /// reports what comes back within a second.
+    ///
+    ///   --echo
+    /// </summary>
+    static int EchoProbe(bool withLocalOff)
+    {
+        var seen = new List<(long ms, string what)>();
+        var sysex = new List<byte[]>();
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        using var input = new MidiIn();
+        input.Received += (_, e) =>
+        {
+            if (e.IsSysEx) { lock (sysex) sysex.Add(e.SysEx); return; }
+            lock (seen) seen.Add((clock.ElapsedMilliseconds, e.Describe()));
+        };
+        if (!input.Open("UltraNova", out string inError))
+        {
+            Console.Error.WriteLine("input failed: " + inError);
+            return 2;
+        }
+        using var output = new MidiOut();
+        if (!output.Open("UltraNova"))
+        {
+            Console.Error.WriteLine("output failed: " + output.LastError);
+            return 2;
+        }
+        Console.WriteLine($"in '{input.PortName}' / out '{output.PortName}'");
+
+        // Read the instrument's status and return the reply, or null.
+        byte[] Status(string label)
+        {
+            lock (sysex) sysex.Clear();
+            output.SendRaw(Request(0x60, 0x21));
+            var t = System.Diagnostics.Stopwatch.StartNew();
+            while (t.ElapsedMilliseconds < 900)
+            {
+                lock (sysex)
+                {
+                    var hit = sysex.FirstOrDefault(m => m.Length is 14 or 15 && m[7] == 0x20);
+                    if (hit != null)
+                    {
+                        Console.WriteLine($"   status {label}: {Convert.ToHexString(hit)}"
+                            + $"  (byte 12 = 0x{hit[12]:X2})");
+                        return hit;
+                    }
+                }
+                Thread.Sleep(10);
+            }
+            Console.WriteLine($"   status {label}: no reply");
+            return null;
+        }
+
+        // CC 122 is the standard channel-mode Local Control, and the instrument's own CC
+        // list documents it. Sent on both channel 1 and 2 because the status reply's
+        // channel field is 0x01 and it is not settled whether that counts from zero;
+        // a channel-mode message on a channel the instrument ignores costs nothing.
+        void SetLocal(bool on)
+        {
+            byte v = (byte)(on ? 127 : 0);
+            output.Send(0xB0, 122, v);
+            output.Send(0xB1, 122, v);
+            Thread.Sleep(300);
+        }
+
+        byte[] before = null;
+        if (withLocalOff)
+        {
+            Console.WriteLine("-- bracketing the probe with Local Off (CC 122 = 0) --");
+            before = Status("before");
+            SetLocal(false);
+            Status("with Local Off");
+        }
+
+        (long ms, string what)[] Probe(string label, Action send)
+        {
+            lock (seen) seen.Clear();
+            long t0 = clock.ElapsedMilliseconds;
+            Console.WriteLine($"-> {label}");
+            send();
+            Thread.Sleep(900);
+            (long, string)[] got;
+            lock (seen) got = seen.ToArray();
+            foreach (var (ms, what) in got) Console.WriteLine($"   <- +{ms - t0,4} ms  {what}");
+            if (got.Length == 0) Console.WriteLine("   <- (nothing came back)");
+            return got;
+        }
+
+        // Silent: a controller the instrument will not sound.
+        var cc = Probe("CC 64 = 127 then 0 on channel 1", () =>
+        {
+            output.Send(0xB0, 64, 127);
+            Thread.Sleep(120);
+            output.Send(0xB0, 64, 0);
+        });
+
+        // Audible but brief and quiet, so the instrument's own reaction is obvious too.
+        var note = Probe("Note C3 velocity 40, released after 120 ms", () =>
+        {
+            output.Send(0x90, 60, 40);
+            Thread.Sleep(120);
+            output.Send(0x80, 60, 0);
+        });
+
+        bool ccEcho = cc.Any(g => g.what.Contains("64", StringComparison.Ordinal));
+        bool noteEcho = note.Any(g => g.what.Contains("60", StringComparison.Ordinal)
+            || g.what.Contains("C3", StringComparison.OrdinalIgnoreCase));
+        Console.WriteLine();
+        Console.WriteLine($"controller echoed back: {ccEcho}");
+        Console.WriteLine($"note echoed back      : {noteEcho}");
+        Console.WriteLine(ccEcho || noteEcho
+            ? "THE INSTRUMENT PASSES RECEIVED MIDI TO ITS OWN OUTPUT - forwarding needs an echo guard"
+            : "no thru path: a loop cannot be closed through the instrument itself");
+
+        if (withLocalOff)
+        {
+            Console.WriteLine();
+            Console.WriteLine("-- restoring Local On (CC 122 = 127) --");
+            SetLocal(true);
+            var after = Status("after");
+            if (before != null && after != null)
+                Console.WriteLine(before[12] == after[12]
+                    ? $"   byte 12 unchanged at 0x{after[12]:X2} - it is not the Local flag,"
+                        + " or CC 122 was ignored"
+                    : $"   byte 12 moved 0x{before[12]:X2} -> 0x{after[12]:X2} across the bracket");
         }
         return 0;
     }
@@ -647,6 +805,85 @@ static class Program
             release.Set();
             reader.Join(3000);
         }
+    }
+
+    /// <summary>
+    /// A momentary switch asserts its value only while the control is physically down.
+    /// A page change takes the mapping away while the pedal stays put, so the released
+    /// value has to be sent - found on the instrument, where holding the sustain pedal
+    /// across an Automap page change left CC 64 latched on for good.
+    /// </summary>
+    static void AHeldMomentarySwitchIsReleasedOnAPageChange()
+    {
+        using var engine = new AutomapEngine();
+        engine.Config.OutputPort = "";
+
+        var pedal = new Mapping { Send = "cc", Channel = 1, Number = 64, Mode = "momentary", From = 0, To = 127 };
+        Equal(127, engine.SendSwitch(pedal, pressed: true), "the pedal asserts its pressed value");
+        Equal(1, engine.ReleaseHeldSwitches(), "one held switch was released");
+        Equal(0, engine.ReleaseHeldSwitches(), "and only once");
+
+        // Letting go by hand also clears it, so a page change afterwards has nothing to do.
+        Equal(0, engine.SendSwitch(pedal, pressed: false), "releasing sends the released value");
+        Equal(0, engine.ReleaseHeldSwitches(), "nothing left held");
+
+        // Latches are not transient state: a toggle is meant to outlive the page.
+        var toggle = new Mapping { Send = "cc", Number = 21, Mode = "toggle", From = 0, To = 127 };
+        engine.SendSwitch(toggle, pressed: true);
+        Equal(0, engine.ReleaseHeldSwitches(), "a toggle is a latch and is left alone");
+        engine.TryGetPersistentSwitchState(toggle, out bool stillOn, out _);
+        Equal(true, stillOn, "and stays on");
+
+        // A note mapping is owned by the note bookkeeping, not counted twice here.
+        var note = new Mapping { Send = "note", Number = 60, Mode = "momentary", From = 0, To = 100 };
+        engine.SendSwitch(note, pressed: true);
+        Equal(0, engine.ReleaseHeldSwitches(), "notes are released by ReleaseAllNotes");
+    }
+
+    /// <summary>
+    /// Keyboard forwarding is a setting, and it also stands aside for Novation's own
+    /// editor: that editor takes Local off and expects the DAW to listen to the
+    /// instrument's own port, so forwarding on top of it doubles every note.
+    /// </summary>
+    static void KeyboardForwardingRespectsSettingAndNativeEditor()
+    {
+        using var engine = new AutomapEngine();
+
+        Equal(true, engine.Config.ForwardKeyboardNotes, "forwarding is on by default");
+        Equal(true, engine.Config.PauseForwardingForNativeEditor, "and pauses for the editor");
+
+        Equal(true, engine.InstrumentPortRelayActive(nativeEditorOpen: false), "nothing in the way");
+        Equal(false, engine.InstrumentPortRelayActive(nativeEditorOpen: true), "editor has it");
+
+        engine.Config.PauseForwardingForNativeEditor = false;
+        Equal(true, engine.InstrumentPortRelayActive(nativeEditorOpen: true),
+            "the pause can be turned off for a DAW fed only from here");
+
+        engine.Config.ForwardKeyboardNotes = false;
+        Equal(false, engine.InstrumentPortRelayActive(nativeEditorOpen: false),
+            "the setting wins whatever the editor is doing");
+        Equal(false, engine.InstrumentPortRelayActive(nativeEditorOpen: true), "and both together");
+    }
+
+    /// <summary>
+    /// The lock probe reads names and never creates them: creating one would make the
+    /// next native instance believe the hardware is taken, which is the opposite of the
+    /// point. Checked against a name this test owns, so no real application is disturbed.
+    /// </summary>
+    static void TheLockProbeReadsWithoutCreating()
+    {
+        string name = "UltraNovaCtl-test-" + Guid.NewGuid().ToString("N");
+        Equal(false, NativeLocks.IsHeld(name), "an unheld name reads as free");
+
+        using (var held = new Mutex(true, name))
+            Equal(true, NativeLocks.IsHeld(name), "a held name reads as held");
+
+        Equal(false, NativeLocks.IsHeld(name), "and is free again once released");
+
+        // The probe itself must not have brought the name into existence.
+        Equal(false, NativeLocks.IsHeld(name), "probing did not create it");
+        Equal(false, NativeLocks.IsHeld(""), "an empty name is not a lock");
+        Equal(false, NativeLocks.IsHeld(null), "nor is nothing at all");
     }
 
     static void ReleaseWithoutConnectionIsHarmless()

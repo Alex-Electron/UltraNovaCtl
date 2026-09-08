@@ -249,6 +249,24 @@ public sealed class Config
     public bool EchoButtonLeds { get; set; } = true;
 
     /// <summary>
+    /// Pass the instrument's keyboard - notes and polyphonic pressure - to the MIDI
+    /// output, so a DAW fed from here can play it. Turn it off when the DAW already
+    /// listens to the instrument's own port, or every note arrives twice.
+    /// </summary>
+    public bool ForwardKeyboardNotes { get; set; } = true;
+
+    /// <summary>
+    /// Stop forwarding while Novation's own UltraNova Editor is driving the instrument.
+    ///
+    /// That editor takes Local off and expects the DAW to sit in the middle, listening to
+    /// the instrument's own port and sending back to it. Forwarding into the same DAW on
+    /// top of that gives it every note twice, and the return path then plays both.
+    /// Detected from the editor's own lock, without taking it - see
+    /// <see cref="NativeLocks.EditorHardware"/>.
+    /// </summary>
+    public bool PauseForwardingForNativeEditor { get; set; } = true;
+
+    /// <summary>
     /// Panel LED walker, All off, naming codes by eye — the tools used to map the
     /// hardware. Off by default so a mapping session is not a lamp test. Not saved:
     /// tray "Debug tools" or <c>--debug</c> for this session only.

@@ -106,6 +106,20 @@ public sealed class AutomapEngine : IDisposable
     /// <summary>Codes currently held lit for a latched switch, so a page change can
     /// put out the ones that no longer apply instead of leaving a lie on the panel.</summary>
     readonly HashSet<int> _persistentLedCodes = new();
+
+    /// <summary>
+    /// Momentary switches currently asserting their pressed value, and the value to send
+    /// when they let go. A momentary control asserts only while it is physically down, so
+    /// a page change - which takes the mapping away while the finger or the pedal stays
+    /// put - has to send the released value or leave it asserted for good. That is how a
+    /// held sustain pedal survived a page change as a permanently latched CC 64.
+    ///
+    /// Notes are not tracked here; <see cref="_activeNotes"/> owns those. Toggle and step
+    /// are not tracked either - they are latches, and a latch is meant to outlive both the
+    /// finger and the page.
+    /// </summary>
+    readonly Dictionary<Mapping, int> _heldTransient = new();
+
     readonly object _switchLock = new();
 
     // A note that was sent has to be released, and the release must carry the channel
@@ -116,6 +130,9 @@ public sealed class AutomapEngine : IDisposable
     /// <summary>Keyboard notes passed through to the outputs, as (channel &lt;&lt; 7) | number.</summary>
     readonly HashSet<int> _forwardedNotes = new();
     readonly object _noteLock = new();
+
+    volatile bool _nativeEditorOpen;
+    long _nativeEditorCheckedMs;
 
     readonly Dictionary<int, bool> _analogDown = new();
     readonly Dictionary<int, int> _analogRaw = new();
@@ -516,8 +533,12 @@ public sealed class AutomapEngine : IDisposable
         RefreshPersistentButtonLeds();
     }
 
-    /// <summary>Silence keyboard notes that were passed through, for the same reason.</summary>
-    void ReleaseForwardedNotes()
+    /// <summary>
+    /// Silence keyboard notes that were passed through, for the same reason. Public
+    /// because turning forwarding off mid-note has to release what is already sounding -
+    /// nothing else would know how.
+    /// </summary>
+    public void ReleaseForwardedNotes()
     {
         lock (_noteLock)
         {
@@ -575,6 +596,7 @@ public sealed class AutomapEngine : IDisposable
     public bool ReopenOutputs()
     {
         ReleaseAllNotes();
+        ReleaseHeldSwitches();
         ReleaseForwardedNotes();
         CloseOutputs();
         return OpenOutputs();
@@ -597,6 +619,7 @@ public sealed class AutomapEngine : IDisposable
     {
         // Before anything is torn down, while the outputs are still open.
         ReleaseAllNotes();
+        ReleaseHeldSwitches();
         ReleaseForwardedNotes();
 
         // The synth decides its own mode: both captures show F0 00 00 F7 travelling only
@@ -1261,6 +1284,7 @@ public sealed class AutomapEngine : IDisposable
         // A button held down on the way out keeps its note; the next page gives that
         // button a different meaning, and nothing would ever release it.
         ReleaseAllNotes();
+        ReleaseHeldSwitches();
         lock (_analogLock)
         {
             StashPageEncoders();
@@ -1277,6 +1301,7 @@ public sealed class AutomapEngine : IDisposable
     {
         if (Config.Banks.Count == 0) return;
         ReleaseAllNotes();
+        ReleaseHeldSwitches();
         lock (_analogLock)
         {
             StashPageEncoders();
@@ -1640,7 +1665,7 @@ public sealed class AutomapEngine : IDisposable
 
         // Leaving Automap: the panel stops answering, so anything sounding has to be
         // let go here while the outputs are still open.
-        if (!on) ReleaseAllNotes();
+        if (!on) { ReleaseAllNotes(); ReleaseHeldSwitches(); }
 
         ModeChanged?.Invoke(this, on);
 
@@ -1781,6 +1806,55 @@ public sealed class AutomapEngine : IDisposable
     /// appears on both paths is not sent twice.
     /// </summary>
     /// <summary>
+    /// Whether what arrives on the instrument's own MIDI port should be relayed to the
+    /// outputs - keyboard notes, polyphonic pressure, and the wheels, pedals and channel
+    /// aftertouch that ride the same port. Pure, so the decision can be checked without a
+    /// lock, an instrument or a plug-in.
+    ///
+    /// Deliberately does NOT cover the Automap analog stream: those are per-page
+    /// assignments the user made on purpose, and nobody else can read pins 16/18, so they
+    /// never arrive at a DAW twice.
+    /// </summary>
+    internal bool InstrumentPortRelayActive(bool nativeEditorOpen) =>
+        Config.ForwardKeyboardNotes
+        && !(nativeEditorOpen && Config.PauseForwardingForNativeEditor);
+
+    /// <summary>True while the native editor's lock was last seen held.</summary>
+    public bool NativeEditorOpen => _nativeEditorOpen;
+
+    /// <summary>
+    /// Probe the native editor's lock, at most once a second, and say when it changes.
+    ///
+    /// This is asked on the note path, so it cannot open a kernel object per note. The
+    /// window is deliberately coarse: a second of forwarding either way at the moment a
+    /// plug-in is loaded or removed is nothing, and the alternative is a background timer
+    /// for a question nobody asks unless notes are arriving. Two read threads racing here
+    /// costs at worst one extra probe.
+    /// </summary>
+    bool NativeEditorDriving()
+    {
+        long now = Environment.TickCount64;
+        if (now - _nativeEditorCheckedMs >= 1000)
+        {
+            _nativeEditorCheckedMs = now;
+            bool open = NativeLocks.IsHeld(NativeLocks.EditorHardware);
+            if (open != _nativeEditorOpen)
+            {
+                _nativeEditorOpen = open;
+                bool pausing = Config.ForwardKeyboardNotes && Config.PauseForwardingForNativeEditor;
+                Say(open
+                    ? "native UltraNova Editor has the instrument"
+                        + (pausing ? "; keyboard forwarding paused" : "")
+                    : "native UltraNova Editor released the instrument"
+                        + (pausing ? "; keyboard forwarding resumed" : ""));
+                // Anything already asserted through us belongs to the old arrangement.
+                if (pausing) { ReleaseForwardedNotes(); ReleaseHeldSwitches(); }
+            }
+        }
+        return _nativeEditorOpen;
+    }
+
+    /// <summary>
     /// Pass the keyboard through to the MIDI outputs: notes and polyphonic aftertouch,
     /// nothing else. This is what makes the instrument playable in a DAW that is being
     /// fed from us rather than from the system port - which is the whole point of taking
@@ -1793,6 +1867,8 @@ public sealed class AutomapEngine : IDisposable
     /// </summary>
     void ForwardKeyboardMidi(byte status, byte d1, byte d2)
     {
+        if (!InstrumentPortRelayActive(NativeEditorDriving())) return;
+
         int kind = status & 0xF0;
         if (kind == 0xA0)
         {
@@ -1821,6 +1897,9 @@ public sealed class AutomapEngine : IDisposable
         else if (kind == 0xB0)
             code = d1 switch { 1 => 1, 11 => 3, 64 => 4, _ => -1 };
         if (code < 0) return;
+        // Same class as the keyboard: these ride the instrument's own port, so a DAW
+        // listening to that port already has them and relaying is duplication.
+        if (!InstrumentPortRelayActive(NativeEditorDriving())) return;
         lock (_analogLock)
         {
             if (Environment.TickCount64 - _analogStreamMs.GetValueOrDefault(code) < 80)
@@ -2139,6 +2218,10 @@ public sealed class AutomapEngine : IDisposable
         // means "on", and momentary with Press below Release still means "pressed".
         bool? noteOn = null;
 
+        // Set by the modes that assert only while the control is down, to the value that
+        // letting go sends. Left null by the latching modes.
+        int? transient = null;
+
         int value;
         switch (m.Mode)
         {
@@ -2174,16 +2257,51 @@ public sealed class AutomapEngine : IDisposable
                 // Momentary when those values matter.
                 value = pressed ? 127 : 0;
                 noteOn = pressed;
+                transient = 0;
                 break;
 
             default:   // momentary
                 value = pressed ? m.To : m.From;
                 noteOn = pressed;
+                transient = m.From;
                 break;
+        }
+
+        // Only the two modes tied to the control actually being down are remembered, and
+        // only for send types that latch on the far end. See _heldTransient.
+        if (transient.HasValue && m.Send != "note")
+        {
+            lock (_switchLock)
+            {
+                if (pressed) _heldTransient[m] = Math.Clamp(transient.Value, 0, 127);
+                else _heldTransient.Remove(m);
+            }
         }
 
         SendMapped(m, value, noteOn);
         return value;
+    }
+
+    /// <summary>
+    /// Send the released value for every momentary switch still asserting its pressed
+    /// one, and forget them. Returns how many were released.
+    ///
+    /// Called wherever the mapping can disappear from under a control that is still
+    /// down: a page change, a bank change, leaving Automap, re-opening the outputs and
+    /// shutdown. Latches - toggle and step - are deliberately left alone.
+    /// </summary>
+    public int ReleaseHeldSwitches()
+    {
+        KeyValuePair<Mapping, int>[] held;
+        lock (_switchLock)
+        {
+            if (_heldTransient.Count == 0) return 0;
+            held = _heldTransient.ToArray();
+            _heldTransient.Clear();
+        }
+        // Outside the lock: each of these is a send. See OnAnalog for why that matters.
+        foreach (var entry in held) SendMapped(entry.Key, entry.Value, noteOn: false);
+        return held.Length;
     }
 
     void SendMapped(Mapping m, int value, bool? noteOn = null)

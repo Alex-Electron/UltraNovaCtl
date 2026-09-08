@@ -90,6 +90,7 @@ public partial class MainWindow : Window
     SelectableTextBlock _logText;
     Button _logCopy, _logSave, _logClear;
     CheckBox _logFollow, _echoLeds, _selPickup;
+    CheckBox _forwardKeys, _pauseForEditor;
     ComboBox _kbdCh, _octave, _transpose, _after;
     TextBlock _mode;
     ScrollViewer _logScroll;
@@ -128,6 +129,8 @@ public partial class MainWindow : Window
         _logClear = this.FindControl<Button>("LogClearBtn");
         _logFollow = this.FindControl<CheckBox>("LogFollowBox");
         _echoLeds = this.FindControl<CheckBox>("EchoLedsBox");
+        _forwardKeys = this.FindControl<CheckBox>("ForwardKeysBox");
+        _pauseForEditor = this.FindControl<CheckBox>("PauseForEditorBox");
         _selPickup = this.FindControl<CheckBox>("SelPickupBox");
         _logScroll = this.FindControl<ScrollViewer>("LogScroll");
         _encoderRow = this.FindControl<WrapPanel>("EncoderRow");
@@ -233,6 +236,23 @@ public partial class MainWindow : Window
         {
             _engine.Config.EchoButtonLeds = _echoLeds.IsChecked == true;
             _engine.RefreshPersistentButtonLeds(force: true);
+        };
+        _forwardKeys.IsChecked = _engine.Config.ForwardKeyboardNotes;
+        _forwardKeys.IsCheckedChanged += (_, _) =>
+        {
+            _engine.Config.ForwardKeyboardNotes = _forwardKeys.IsChecked == true;
+            // Turning it off mid-note would otherwise leave that note sounding in the DAW
+            // with nothing left that knows how to release it.
+            _engine.ReleaseForwardedNotes();
+            Enqueue(_engine.Config.ForwardKeyboardNotes
+                ? "keyboard forwarded to the MIDI output"
+                : "keyboard not forwarded; the DAW should listen to the instrument's own port");
+        };
+        _pauseForEditor.IsChecked = _engine.Config.PauseForwardingForNativeEditor;
+        _pauseForEditor.IsCheckedChanged += (_, _) =>
+        {
+            _engine.Config.PauseForwardingForNativeEditor = _pauseForEditor.IsChecked == true;
+            _engine.ReleaseForwardedNotes();
         };
         WireLogMenu();
         _export.Click += async (_, _) => await ExportAsync();
