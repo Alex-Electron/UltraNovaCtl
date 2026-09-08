@@ -275,7 +275,7 @@ static class Program
         Console.WriteLine($"in '{input.PortName}' / out '{output.PortName}'");
 
         // Read the instrument's status and return the reply, or null.
-        byte[] Status(string label)
+        byte[]? Status(string label)
         {
             lock (sysex) sysex.Clear();
             output.SendRaw(Request(0x60, 0x21));
@@ -314,7 +314,7 @@ static class Program
             Thread.Sleep(400);
         }
 
-        byte[] before = null;
+        byte[]? before = null;
         if (withLocalOff)
         {
             Console.WriteLine("-- bracketing the probe with Local Off (CC 122 = 0) --");
@@ -411,7 +411,7 @@ static class Program
             return 2;
         }
 
-        byte[] Ask(byte[] request, int expectLength, int waitMs)
+        byte[]? Ask(byte[] request, int expectLength, int waitMs)
         {
             lock (received) received.Clear();
             if (!output.SendRaw(request)) return null;

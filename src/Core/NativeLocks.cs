@@ -51,6 +51,7 @@ public static class NativeLocks
         return false;
     }
 
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
     static bool Exists(string name)
     {
         // A named object can be a mutex or an event depending on who made it, and the
