@@ -1,10 +1,17 @@
 # Changelog
 
-## 1.2.1 — unreleased
+## 1.2.1 — 2026-09-09
 
 Core work dates from 2026-09-01/02. The engine half of it was lost to a file-level
 revert on 2026-09-07 and restored on 2026-09-08 from the surviving compiled assembly;
-see `docs/RESTORE-1.2.1.md`. The release itself waits on the hardware pass.
+see `docs/RESTORE-1.2.1.md`.
+
+Tried on the instrument before release: Automap connects and hands the panel over;
+the private Port 1 pin is taken with the public WinMM pair left free for the native
+editor; keyboard notes reach the DAW; a held sustain pedal is released on a page
+change; latched buttons keep their lamps across a page change; forwarding pauses by
+itself while Novation's editor holds the instrument and resumes when it lets go; and
+quitting does not disturb MIDI inputs a DAW already has open.
 
 - Settings are written through a flushed temporary file and atomically replaced. The
   previous valid file is retained as `.bak`.
