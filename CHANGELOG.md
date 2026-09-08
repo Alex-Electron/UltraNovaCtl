@@ -53,10 +53,12 @@ quitting does not disturb MIDI inputs a DAW already has open.
 - Added zero-dependency core regression checks and made them part of CI. Their fixture
   now travels with the test binary instead of being read out of the ignored `dist/`
   folder, so the step also passes on a clean checkout.
-- The check runner gained two read-only hardware capture modes, `--dump` and `--scan`,
-  which request patch dumps and checksums over the instrument's public WinMM port. They
-  confirmed the patch checksum algorithm against the device itself for 508 of 512 slots -
-  see `research-patch-editor/hw-capture/FINDINGS.md`.
+- The check runner gained hardware capture modes: `--dump` and `--scan` request patch
+  dumps and checksums over the instrument's public WinMM port, `--echo` asks whether the
+  instrument passes received MIDI back to its own output, and `--locks` reports which of
+  Novation's named locks are held. They confirmed the patch checksum algorithm against
+  the device itself for 508 of 512 slots; the write-up is
+  [docs/PATCH-PROTOCOL.ru.md](docs/PATCH-PROTOCOL.ru.md).
 - A SysEx send that times out is no longer counted as sent. The send counter and the
   outgoing MIDI log used to record it as success, which made a dead virtual port look
   healthy to everything upstream.

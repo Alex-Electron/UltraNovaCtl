@@ -216,6 +216,13 @@ sequenceDiagram
 
 Full write-up: [docs/PROTOCOL.md](docs/PROTOCOL.md).
 
+That is the Automap channel — the control surface. The instrument also speaks a second,
+unrelated dialect for patches: 526-byte dumps, a checksum, and unsolicited notifications
+when the selected patch or the Local setting changes. That one was checked slot by slot
+against the instrument's own answers — 508 of 512 bit for bit — and is written up in
+[docs/PATCH-PROTOCOL.ru.md](docs/PATCH-PROTOCOL.ru.md) (Russian). Nothing in the
+application uses it yet; it is the groundwork for the editor and the librarian.
+
 ---
 
 ## The panel, mapped
@@ -259,7 +266,10 @@ UltraNovaCtl/
 │   ├── GUIDE.md               # the full guide — start here
 │   ├── GUIDE.ru.md            # …in Russian
 │   ├── PROTOCOL.md            # the Automap protocol, as captured from the wire
+│   ├── PATCH-PROTOCOL.ru.md   # the patch format, checked against the instrument
 │   ├── PANEL-MAP.md           # every button, lamp and encoder code
+│   ├── PRODUCT-PLAN.ru.md     # where this is going
+│   ├── RESTORE-1.2.1.md       # recovering lost source from its own build output
 │   └── BUILD.md               # how to build it
 ├── img/
 │   ├── ultranova.png          # the instrument, background removed
