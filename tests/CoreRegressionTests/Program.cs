@@ -36,6 +36,7 @@ static class Program
             ("a held momentary switch is released on a page change", AHeldMomentarySwitchIsReleasedOnAPageChange),
             ("the instrument-port relay respects the setting and the native editor", KeyboardForwardingRespectsSettingAndNativeEditor),
             ("the lock probe reads without creating", TheLockProbeReadsWithoutCreating),
+            ("latched lamps stay within the rail budget", LatchedLampsStayWithinTheRailBudget),
             ("releasing notes without a connection is harmless", ReleaseWithoutConnectionIsHarmless),
             ("reopening outputs reports failure instead of throwing", ReopenOutputsReportsFailure),
             ("an unopened output is not usable", UnopenedOutputIsNotUsable),
@@ -888,6 +889,31 @@ static class Program
         Equal(false, NativeLocks.IsHeld(name), "probing did not create it");
         Equal(false, NativeLocks.IsHeld(""), "an empty name is not a lock");
         Equal(false, NativeLocks.IsHeld(null), "nor is nothing at all");
+    }
+
+    /// <summary>
+    /// More than thirteen lit lamps sags the instrument's power rail - the Demo path has
+    /// always respected that ceiling, but the latched-switch path did not, so latching
+    /// fourteen buttons on one page would have lit them all.
+    /// </summary>
+    static void LatchedLampsStayWithinTheRailBudget()
+    {
+        var wanted = Enumerable.Range(20, 25).ToArray();       // 25 codes, 20..44
+        var shown = AutomapEngine.LampsToShow(wanted);
+
+        Equal(PanelLamps.MaxAtOnce, shown.Length, "never more lamps than the rail allows");
+        Equal(13, PanelLamps.MaxAtOnce, "the ceiling is thirteen");
+        Equal(20, shown[0], "lowest code first, so the choice is stable");
+        Equal(32, shown[^1], "and contiguous from there");
+
+        // Under the ceiling nothing is dropped, and the order still holds.
+        var few = new[] { 30, 21, 25 };
+        var all = AutomapEngine.LampsToShow(few);
+        Equal(3, all.Length, "nothing dropped below the ceiling");
+        Equal(21, all[0], "sorted");
+        Equal(30, all[^1], "sorted");
+
+        Equal(0, AutomapEngine.LampsToShow(Array.Empty<int>()).Length, "nothing wanted, nothing lit");
     }
 
     static void ReleaseWithoutConnectionIsHarmless()

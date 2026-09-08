@@ -133,6 +133,7 @@ public sealed class AutomapEngine : IDisposable
 
     volatile bool _nativeEditorOpen;
     long _nativeEditorCheckedMs;
+    int _lastDroppedLamps = -1;
 
     readonly Dictionary<int, bool> _analogDown = new();
     readonly Dictionary<int, int> _analogRaw = new();
@@ -1819,6 +1820,13 @@ public sealed class AutomapEngine : IDisposable
         Config.ForwardKeyboardNotes
         && !(nativeEditorOpen && Config.PauseForwardingForNativeEditor);
 
+    /// <summary>
+    /// Which of the wanted lamps may actually be lit. Lowest code first, so which ones
+    /// show is stable rather than incidental, and never more than the rail allows.
+    /// </summary>
+    internal static int[] LampsToShow(IEnumerable<int> wanted) =>
+        wanted.OrderBy(c => c).Take(PanelLamps.MaxAtOnce).ToArray();
+
     /// <summary>True while the native editor's lock was last seen held.</summary>
     public bool NativeEditorOpen => _nativeEditorOpen;
 
@@ -2156,6 +2164,7 @@ public sealed class AutomapEngine : IDisposable
         if (!AutomapActive || _demoHold) return;
 
         int[] toDark, toLight;
+        int dropped;
         lock (_switchLock)
         {
             var wanted = new HashSet<int>();
@@ -2169,15 +2178,32 @@ public sealed class AutomapEngine : IDisposable
                         wanted.Add(code);
                 }
             }
-            toDark = _persistentLedCodes.Where(c => !wanted.Contains(c)).ToArray();
-            toLight = wanted.Where(c => force || !_persistentLedCodes.Contains(c)).ToArray();
+
+            // The rail sags past thirteen lamps, and that ceiling is hardware rather than
+            // taste - Demo has respected it from the start. Latched switches beyond it
+            // stay dark: a lamp that lies about one switch is a smaller price than pumping
+            // the analogue output, and the log says how many are not shown.
+            var shown = new HashSet<int>(LampsToShow(wanted));
+            dropped = wanted.Count - shown.Count;
+
+            toDark = _persistentLedCodes.Where(c => !shown.Contains(c)).ToArray();
+            toLight = shown.Where(c => force || !_persistentLedCodes.Contains(c)).ToArray();
             _persistentLedCodes.Clear();
-            foreach (int c in wanted) _persistentLedCodes.Add(c);
+            foreach (int c in shown) _persistentLedCodes.Add(c);
         }
 
         // Outside the lock: each SetLed is a USB write.
         foreach (int c in toDark) SetLed(c, false);
         foreach (int c in toLight) SetLed(c, true);
+
+        // Only when it changes; this runs on every page change and repaint.
+        if (dropped != _lastDroppedLamps)
+        {
+            _lastDroppedLamps = dropped;
+            if (dropped > 0)
+                Say($"{dropped} latched switch{(dropped == 1 ? "" : "es")} left dark: the panel"
+                    + $" is held to {PanelLamps.MaxAtOnce} lit lamps to protect the power rail");
+        }
     }
 
     /// <summary>
