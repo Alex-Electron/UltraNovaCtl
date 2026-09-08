@@ -110,8 +110,8 @@ UltraNova Editor, the Librarian, and any other DAW at the same time.
 
 Turn encoder 1. The DAW should show CC 21 moving.
 
-That is the default map: the ten encoders on **channel 1**, CC 21–30 in panel order — the
-eight on 21–28, the filter knob on 29, the patch dial on 30 — and the panel buttons on
+That is the default map: the ten encoders on **channel 1**, CC 21–30 — the eight on 21–28,
+the filter knob on 29, the patch dial on 30 — and the panel buttons on
 **channel 2**, each one at CC 20 + its button code, so `LOCK` (code 6) is CC 26 and the dial
 push (code 39) is CC 59. Touch starts disabled. Mod wheel, pitch bend, aftertouch,
 expression and sustain all travel through loopMIDI. Change any of it as below.
@@ -157,7 +157,9 @@ Whatever you clicked last is shown here, on three tabs: **Parameter**, **Touch**
 
 ### The control areas
 
-**ENCODERS** — the eight, plus the filter knob and the patch dial. Each shows its label, its
+**ENCODERS** — laid out as they sit on the instrument: the patch dial, then the filter
+knob, then the eight under the display. The CC numbering does not follow that order (the
+eight are 21-28, the filter 29, the dial 30), so the window follows the hardware instead. Each shows its label, its
 live value and its assignment. Values are remembered per page. `Zero all` resets the values,
 not the assignments. `Clear` strips every assignment on this bank (all pages). `Revert`
 puts the current page back to the factory map for its bank.

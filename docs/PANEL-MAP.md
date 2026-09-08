@@ -84,7 +84,7 @@ addressed by the host.
 
 | Index | Control |
 |---:|---|
-| 0–7 | the eight encoders under the display |
+| 0–7 | the eight encoders under the display. On the panel these sit to the RIGHT of the two below, so the numbering is not the physical order |
 | 8 | filter knob |
 | 9 | patch dial (push arrives separately as button 39) |
 
