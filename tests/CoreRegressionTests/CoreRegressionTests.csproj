@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>UltraNovaCtl.CoreRegressionTests</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Core\UltraNovaCtl.Core.csproj" />
+  </ItemGroup>
+  <!--
+    Fixtures travel with the binary. The pre-schema config used to be read out of
+    dist/, which .gitignore excludes, so the check passed here and failed on any
+    clean checkout - including CI.
+  -->
+  <ItemGroup>
+    <Content Include="fixtures\**">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+</Project>

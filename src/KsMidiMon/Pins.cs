@@ -83,7 +83,7 @@ internal static class Pins
     /// One KS property request. Returns the raw bytes, or null with the error set.
     /// Variable-length properties are probed first with a null output buffer.
     /// </summary>
-    static byte[] Query(IntPtr filter, uint propId, uint pinId, int fixedSize, out int error)
+    static byte[]? Query(IntPtr filter, uint propId, uint pinId, int fixedSize, out int error)
     {
         var p = new KSP_PIN
         {

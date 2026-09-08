@@ -6,4 +6,12 @@
     <AssemblyName>UltraNovaCtl.Core</AssemblyName>
     <RootNamespace>UltraNovaCtl.Core</RootNamespace>
   </PropertyGroup>
+  <!--
+    The switch and note bookkeeping is driven by the panel, so the only honest way to
+    test it is to call the same entry point the read thread calls. Opening that to the
+    test assembly beats inventing public API that nothing else would use.
+  -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="UltraNovaCtl.CoreRegressionTests" />
+  </ItemGroup>
 </Project>

@@ -225,7 +225,7 @@
                           ToolTip.Tip="Real-time messages drive a sequencer slaved to external clock; MMC is remote control of a DAW's own transport. Which works depends on the software."/>
                 <TextBox Grid.Column="1" Name="SelKey" MinWidth="120" FontSize="12" Height="30"
                          FontFamily="Consolas,monospace" VerticalContentAlignment="Center"
-                         Padding="8,0" IsVisible="False" Watermark="click here and press the keys"
+                       Padding="8,0" IsVisible="False" PlaceholderText="click here and press the keys"
                          HorizontalAlignment="Stretch"
                          ToolTip.Tip="Click the field and press the combination. It is sent to whatever window has focus."/>
                 <ComboBox Grid.Column="1" Name="SelPick" MinWidth="120" FontSize="12" Height="30"
@@ -262,7 +262,7 @@
                             ToolTip.Tip="Real-time messages drive a sequencer slaved to external clock; MMC is remote control of a DAW's own transport."/>
                   <TextBox Grid.Column="1" Name="TouchKey" MinWidth="120" FontSize="12" Height="30"
                            FontFamily="Consolas,monospace" VerticalContentAlignment="Center"
-                           Padding="8,0" IsVisible="False" Watermark="click here and press the keys"
+                         Padding="8,0" IsVisible="False" PlaceholderText="click here and press the keys"
                            HorizontalAlignment="Stretch"
                            ToolTip.Tip="Click the field and press the combination. It is sent to whatever window has focus."/>
                   <ComboBox Grid.Column="1" Name="TouchPick" MinWidth="120" FontSize="12" Height="30"
@@ -274,12 +274,12 @@
                 </Grid>
               </Grid>
               <StackPanel Grid.Row="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,8,0,0">
-                <TextBlock Text="Released" Classes="stat" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                <TextBlock Name="TouchOffLabel" Text="Released" Classes="stat" VerticalAlignment="Center" Margin="0,0,6,0"/>
                 <TextBox Name="TouchOff" Width="58" FontSize="12" Height="30"
                          ToolTip.Tip="Sent when the finger leaves"
                          FontFamily="Consolas,monospace" VerticalContentAlignment="Center"
                          HorizontalContentAlignment="Center" Padding="4,0"/>
-                <TextBlock Text="Touched" Classes="stat" VerticalAlignment="Center" Margin="12,0,6,0"/>
+                <TextBlock Name="TouchOnLabel" Text="Touched" Classes="stat" VerticalAlignment="Center" Margin="12,0,6,0"/>
                 <TextBox Name="TouchOn" Width="58" FontSize="12" Height="30"
                          ToolTip.Tip="Sent when the finger lands"
                          FontFamily="Consolas,monospace" VerticalContentAlignment="Center"
@@ -426,7 +426,7 @@
                         ToolTip.Tip="20 s panel film (all scenes in one run, at most 13 lamps). Press again to stop."/>
                 <TextBox Name="LedNameBox" Width="150" Height="30" FontSize="12" Margin="14,0,0,0"
                          VerticalContentAlignment="Center" Padding="8,0"
-                         Watermark="what lit up?"/>
+                           PlaceholderText="what lit up?"/>
                 <Button Name="LedNameBtn" Classes="tool" Content="Name it" Width="80"
                         ToolTip.Tip="Record what this code lights. Saved with the configuration."/>
               </StackPanel>

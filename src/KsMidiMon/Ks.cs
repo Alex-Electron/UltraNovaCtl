@@ -15,6 +15,8 @@ internal static class Ks
         new("e725d360-62cc-11cf-a5d6-28db04c10000");
     public static readonly Guid KSDATAFORMAT_SUBTYPE_MIDI =
         new("1d262760-e957-11cf-a5d6-28db04c10000");
+    public static readonly Guid KSDATAFORMAT_SUBTYPE_NOVATION_PORT1 =
+        new("7b80f763-4fdb-4168-9e5e-24b8f695acbb");
     public static readonly Guid KSDATAFORMAT_SPECIFIER_NONE =
         new("0f6417d6-c318-11d0-a43f-00a0c9223196");
     public static readonly Guid KSINTERFACESETID_Standard =

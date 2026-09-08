@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text;
 
 namespace UltraNovaCtl.Core;
 
@@ -217,6 +218,21 @@ public sealed class Bank
 
 public sealed class Config
 {
+    public const int CurrentSchemaVersion = 1;
+
+    /// <summary>
+    /// Version of the persisted shape. Files written before 1.2.1 have no field; the
+    /// property default keeps those files on the first, backward-compatible schema.
+    /// </summary>
+    public int SchemaVersion { get; set; } = CurrentSchemaVersion;
+
+    /// <summary>
+    /// True once the one-off analog routing migration has been applied to this file.
+    /// A file written before it existed reads as false, gets the migration once, and
+    /// then keeps whatever the user chose - including silence.
+    /// </summary>
+    public bool AnalogFactorySendsRepaired { get; set; }
+
     /// <summary>Substring of the MIDI output port name, e.g. "loopMIDI".</summary>
     public string OutputPort { get; set; } = "loopMIDI";
 
@@ -323,6 +339,12 @@ public sealed class Config
     public static string DefaultPath => _path ??= ResolvePath();
     static string _path;
 
+    /// <summary>
+    /// Set when startup recovered a backup or had to quarantine an unreadable file.
+    /// The GUI shows it after constructing its log.
+    /// </summary>
+    public static string LastLoadWarning { get; private set; } = "";
+
     static string ResolvePath()
     {
         string beside = Path.Combine(AppContext.BaseDirectory, FileName);
@@ -350,27 +372,301 @@ public sealed class Config
         catch { return false; }
     }
 
+    /// <summary>
+    /// Load the working configuration. A damaged primary file is moved aside and its
+    /// last known-good backup is preferred over factory defaults.
+    /// </summary>
     public static Config Load(string path = null)
     {
         path ??= DefaultPath;
-        if (!File.Exists(path)) return CreateDefault();
+        LastLoadWarning = "";
+        if (!File.Exists(path))
+        {
+            string backup = BackupPath(path);
+            if (!File.Exists(backup)) return CreateDefault();
+            try
+            {
+                var recovered = LoadStrict(backup);
+                string persistence = TryRestorePrimary(recovered, path);
+                LastLoadWarning = $"working settings file was missing; recovered {backup}{persistence}";
+                Console.WriteLine(LastLoadWarning);
+                return recovered;
+            }
+            catch (Exception backupError)
+            {
+                LastLoadWarning = $"working settings file was missing and its backup was unreadable "
+                    + $"({backupError.Message}); using defaults";
+                Console.WriteLine(LastLoadWarning);
+                return CreateDefault();
+            }
+        }
+
         try
         {
-            var c = JsonSerializer.Deserialize<Config>(File.ReadAllText(path), Json);
-            if (c == null || c.Banks.Count == 0) return CreateDefault();
-            foreach (var b in c.Banks) if (b.Pages.Count == 0) b.Pages.Add(NewPage(b.Name, 1));
-            c.ApplyNames();
-            c.SilenceFactoryAppButtons();
-            c.RepairTouchModes();
-            c.RepairAnalogModes();
-            c.RepairAnalogFactorySends();
-            return c;
+            return LoadStrict(path);
         }
         catch (Exception e)
         {
-            Console.WriteLine($"config unreadable ({e.Message}), using defaults");
+            // A file we refuse to load always gets moved aside, never left at `path`.
+            // Leaving it there looks kinder but is not: the session runs on defaults or
+            // on the backup, and the first autosave rotates those rejected bytes into
+            // `.bak` while a second one drops them entirely - so the edit that was meant
+            // to be preserved is the thing that disappears, with no copy anywhere.
+            //
+            // What the two cases do differ in is the name, because the name is the only
+            // thing the user has to go on. Bytes that are not JSON are damaged; a file
+            // that parses but fails validation is a hand edit with a mistake in it, and
+            // is worth renaming back and fixing rather than deleting.
+            bool unparseable = e is JsonException || e.InnerException is JsonException;
+            string suffix = unparseable ? "corrupt" : "rejected";
+            string setAside = SetAside(path, suffix);
+            string kept = setAside.Length > 0
+                ? $"; {(unparseable ? "damaged" : "rejected")} file kept as {setAside}"
+                    + (unparseable ? "" : " - fix it and rename it back")
+                : $"; {path} could not be moved aside";
+            string backup = BackupPath(path);
+            if (File.Exists(backup))
+            {
+                try
+                {
+                    var recovered = LoadStrict(backup);
+                    string persistence = TryRestorePrimary(recovered, path);
+                    LastLoadWarning = $"settings were unreadable ({e.Message}); recovered {backup}"
+                        + persistence + kept;
+                    Console.WriteLine(LastLoadWarning);
+                    return recovered;
+                }
+                catch (Exception backupError)
+                {
+                    LastLoadWarning = $"settings and backup were unreadable "
+                        + $"({e.Message}; backup: {backupError.Message}); using defaults" + kept;
+                    Console.WriteLine(LastLoadWarning);
+                    return CreateDefault();
+                }
+            }
+
+            LastLoadWarning = $"settings were unreadable ({e.Message}); using defaults" + kept;
+            Console.WriteLine(LastLoadWarning);
             return CreateDefault();
         }
+    }
+
+    /// <summary>
+    /// Load an explicitly selected file. Unlike startup loading, this never substitutes
+    /// defaults: malformed imports must fail visibly and leave the current map untouched.
+    /// </summary>
+    public static Config LoadStrict(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            throw new ArgumentException("a configuration path is required", nameof(path));
+        if (!File.Exists(path))
+            throw new FileNotFoundException("configuration file was not found", path);
+
+        Config c;
+        try
+        {
+            c = JsonSerializer.Deserialize<Config>(File.ReadAllText(path), Json)
+                ?? throw new InvalidDataException("configuration contains JSON null");
+        }
+        catch (JsonException e)
+        {
+            string where = e.LineNumber.HasValue
+                ? $" at line {e.LineNumber.Value + 1}, byte {e.BytePositionInLine.GetValueOrDefault() + 1}"
+                : "";
+            throw new InvalidDataException("configuration is not valid JSON" + where, e);
+        }
+
+        return PrepareLoaded(c);
+    }
+
+    static Config PrepareLoaded(Config c)
+    {
+        if (c.SchemaVersion > CurrentSchemaVersion)
+            throw new InvalidDataException(
+                $"configuration schema {c.SchemaVersion} is newer than supported schema {CurrentSchemaVersion}");
+        if (c.SchemaVersion < 0)
+            throw new InvalidDataException($"invalid configuration schema {c.SchemaVersion}");
+        if (c.Banks == null || c.Banks.Count == 0)
+            throw new InvalidDataException("configuration has no banks");
+
+        c.OutputPort ??= "";
+        c.ControlNames ??= new Dictionary<string, string>();
+
+        for (int bankIndex = 0; bankIndex < c.Banks.Count; bankIndex++)
+        {
+            var bank = c.Banks[bankIndex]
+                ?? throw new InvalidDataException($"bank {bankIndex + 1} is null");
+            bank.Name ??= $"BANK {bankIndex + 1}";
+            bank.Pages ??= new List<Page>();
+            if (bank.Pages.Count == 0)
+                bank.Pages.Add(NewPage(bank.Name, 1, FactoryFirstCc(bankIndex)));
+
+            for (int pageIndex = 0; pageIndex < bank.Pages.Count; pageIndex++)
+            {
+                var page = bank.Pages[pageIndex]
+                    ?? throw new InvalidDataException($"bank {bankIndex + 1}, page {pageIndex + 1} is null");
+                NormalisePage(page, bankIndex, pageIndex);
+            }
+        }
+
+        // Migrations from files written by 1.0-1.2 run before validation because they
+        // intentionally repair values those versions emitted.
+        c.SilenceFactoryAppButtons();
+        c.RepairTouchModes();
+        c.RepairAnalogModes();
+        // Once per file, not on every load. The three repairs above correct values that
+        // 1.0-1.2 actually emitted; this one is a routing policy, and re-applying it at
+        // every start undid a deliberately silenced mod wheel - which is how someone
+        // running loopMIDI alongside the instrument's own port got every movement twice.
+        if (!c.AnalogFactorySendsRepaired)
+        {
+            c.RepairAnalogFactorySends();
+            c.AnalogFactorySendsRepaired = true;
+        }
+        c.ValidateMappings();
+        c.SchemaVersion = CurrentSchemaVersion;
+        c.ApplyNames();
+        return c;
+    }
+
+    static void NormalisePage(Page page, int bankIndex, int pageIndex)
+    {
+        page.Name ??= $"Page {pageIndex + 1}";
+        page.Encoders ??= Array.Empty<Mapping>();
+        if (page.Encoders.Length > 10)
+            throw new InvalidDataException(
+                $"bank {bankIndex + 1}, page {pageIndex + 1} has more than 10 encoders");
+        if (page.Encoders.Length < 10)
+        {
+            int oldLength = page.Encoders.Length;
+            var encoders = page.Encoders;
+            Array.Resize(ref encoders, 10);
+            page.Encoders = encoders;
+            for (int i = oldLength; i < encoders.Length; i++)
+                encoders[i] = new Mapping { Send = "none", Mode = "normal" };
+        }
+        for (int i = 0; i < page.Encoders.Length; i++)
+            if (page.Encoders[i] == null)
+                throw new InvalidDataException(
+                    $"bank {bankIndex + 1}, page {pageIndex + 1}, encoder {i + 1} is null");
+
+        page.Buttons ??= new Dictionary<string, Mapping>();
+        page.Touch ??= new Dictionary<string, Mapping>();
+        page.Analog ??= new Dictionary<string, Mapping>();
+        ValidateDictionary(page.Buttons, bankIndex, pageIndex, "button");
+        ValidateDictionary(page.Touch, bankIndex, pageIndex, "touch");
+        ValidateDictionary(page.Analog, bankIndex, pageIndex, "analog");
+    }
+
+    static void ValidateDictionary(
+        Dictionary<string, Mapping> mappings, int bankIndex, int pageIndex, string kind)
+    {
+        foreach (var kv in mappings)
+        {
+            if (string.IsNullOrWhiteSpace(kv.Key))
+                throw new InvalidDataException(
+                    $"bank {bankIndex + 1}, page {pageIndex + 1} has an empty {kind} id");
+            if (kv.Value == null)
+                throw new InvalidDataException(
+                    $"bank {bankIndex + 1}, page {pageIndex + 1}, {kind} {kv.Key} is null");
+        }
+    }
+
+    static readonly HashSet<string> SendKinds = new(StringComparer.Ordinal)
+    {
+        "cc", "cc14", "nrpn", "rpn", "note", "pitchbend", "aftertouch",
+        "program", "key", "transport", "none",
+    };
+
+    static readonly HashSet<string> ModeKinds = new(StringComparer.Ordinal)
+    {
+        "normal", "inverted", "relative", "relative-signed", "relative-signed2",
+        "relative-offset", "momentary", "toggle", "step",
+    };
+
+    void ValidateMappings()
+    {
+        for (int bankIndex = 0; bankIndex < Banks.Count; bankIndex++)
+        for (int pageIndex = 0; pageIndex < Banks[bankIndex].Pages.Count; pageIndex++)
+        {
+            var page = Banks[bankIndex].Pages[pageIndex];
+            for (int i = 0; i < page.Encoders.Length; i++)
+                ValidateMapping(page.Encoders[i], bankIndex, pageIndex, $"encoder {i + 1}");
+            foreach (var kv in page.Buttons)
+                ValidateMapping(kv.Value, bankIndex, pageIndex, $"button {kv.Key}");
+            foreach (var kv in page.Touch)
+                ValidateMapping(kv.Value, bankIndex, pageIndex, $"touch {kv.Key}");
+            foreach (var kv in page.Analog)
+                ValidateMapping(kv.Value, bankIndex, pageIndex, $"analog {kv.Key}");
+        }
+    }
+
+    static void ValidateMapping(Mapping m, int bankIndex, int pageIndex, string location)
+    {
+        string prefix = $"bank {bankIndex + 1}, page {pageIndex + 1}, {location}";
+        if (m.Send == null || !SendKinds.Contains(m.Send))
+            throw new InvalidDataException($"{prefix} has unknown send type '{m.Send ?? "null"}'");
+        if (m.Mode == null || !ModeKinds.Contains(m.Mode))
+            throw new InvalidDataException($"{prefix} has unknown mode '{m.Mode ?? "null"}'");
+        if (m.Channel is < 1 or > 16)
+            throw new InvalidDataException($"{prefix} has MIDI channel {m.Channel}; expected 1..16");
+        int maxNumber = m.Send switch { "cc14" => 31, "nrpn" or "rpn" => 16383, _ => 127 };
+        if (m.Number is < 0 || m.Number > maxNumber)
+            throw new InvalidDataException(
+                $"{prefix} has number {m.Number}; expected 0..{maxNumber} for {m.Send}");
+        if (m.From is < 0 or > 127 || m.To is < 0 or > 127)
+            throw new InvalidDataException($"{prefix} has a range outside 0..127");
+        if (m.Points is < 1 or > 128)
+            throw new InvalidDataException($"{prefix} has {m.Points} step points; expected 1..128");
+
+        m.Label ??= "";
+        m.KeyGesture ??= "";
+        m.TransportCommand ??= "";
+    }
+
+    static string BackupPath(string path) => path + ".bak";
+
+    static string TryRestorePrimary(Config recovered, string path)
+    {
+        // Never replace a primary that could not be quarantined: doing so would rotate
+        // its corrupt bytes over the good backup. The in-memory recovered map is still used.
+        if (File.Exists(path)) return "; working file could not be recreated";
+        try
+        {
+            recovered.Save(path);
+            return "; working file recreated";
+        }
+        catch (Exception e)
+        {
+            return $"; working file could not be recreated ({e.Message})";
+        }
+    }
+
+    /// <summary>
+    /// Move a file we will not load out of the way, under a name that says why, and
+    /// return where it went ("" if it could not be moved at all).
+    ///
+    /// The stamp is to the second, so two failed loads inside the same second used to
+    /// collide - `File.Move` threw onto an existing name and the whole thing was
+    /// swallowed, losing the file the call exists to preserve. A suffix settles it.
+    /// </summary>
+    static string SetAside(string path, string reason)
+    {
+        if (!File.Exists(path)) return "";
+        string stem = $"{path}.{reason}-{DateTime.UtcNow:yyyyMMdd-HHmmss}";
+        for (int attempt = 0; attempt < 100; attempt++)
+        {
+            string candidate = attempt == 0 ? stem : $"{stem}-{attempt}";
+            if (File.Exists(candidate)) continue;
+            try
+            {
+                File.Move(path, candidate);
+                return candidate;
+            }
+            catch (IOException) { /* lost the race or name taken; try the next one */ }
+            catch { return ""; }
+        }
+        return "";
     }
 
     /// <summary>Merge saved names into the shared table so the whole app sees them.</summary>
@@ -388,8 +684,52 @@ public sealed class Config
         ControlNames[code.ToString()] = name;
     }
 
+    /// <summary>
+    /// Persist through a fully flushed temporary file, then atomically replace the old
+    /// file while retaining one last known-good backup.
+    /// </summary>
     public void Save(string path = null)
-        => File.WriteAllText(path ?? DefaultPath, JsonSerializer.Serialize(this, Json));
+    {
+        path = Path.GetFullPath(path ?? DefaultPath);
+        string dir = Path.GetDirectoryName(path)
+            ?? throw new IOException($"cannot determine the directory for {path}");
+        Directory.CreateDirectory(dir);
+
+        string temp = Path.Combine(dir, $".{Path.GetFileName(path)}.{Guid.NewGuid():N}.tmp");
+        byte[] bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(this, Json));
+        try
+        {
+            using (var stream = new FileStream(
+                temp, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                bufferSize: 16 * 1024, FileOptions.WriteThrough))
+            {
+                stream.Write(bytes);
+                stream.Flush(flushToDisk: true);
+            }
+
+            if (File.Exists(path))
+            {
+                string backup = BackupPath(path);
+                try
+                {
+                    File.Replace(temp, path, backup, ignoreMetadataErrors: true);
+                }
+                catch (PlatformNotSupportedException)
+                {
+                    File.Copy(path, backup, overwrite: true);
+                    File.Move(temp, path, overwrite: true);
+                }
+            }
+            else
+            {
+                File.Move(temp, path);
+            }
+        }
+        finally
+        {
+            try { if (File.Exists(temp)) File.Delete(temp); } catch { }
+        }
+    }
 
     /// <summary>
     /// Encoders on channel 1 as CC 21..30, buttons on their own channel so they cannot
@@ -398,7 +738,9 @@ public sealed class Config
     /// </summary>
     public static Config CreateDefault()
     {
-        var cfg = new Config();
+        // A fresh map is already routed the way the migration would route it, so mark
+        // it done rather than letting the first load rewrite what the user just set.
+        var cfg = new Config { AnalogFactorySendsRepaired = true };
         (string name, int btn, int cc)[] banks =
         {
             ("USER",  BtnUser,  21),
@@ -443,13 +785,14 @@ public sealed class Config
     public static bool IsAnalogSwitch(int code) => code == 4;
 
     /// <summary>
-    /// Mod wheel and pitch bend already leave the UltraNova on its own MIDI port, so
-    /// they stay silent here. Expression, sustain and aftertouch only show up on the
-    /// Automap analog stream in this mode.
+    /// Every performance control is routed to the application's stable virtual output.
+    /// The DAW deliberately does not open the old UltraNova WinMM input, because that
+    /// driver handle is invalidated whenever an Automap host genuinely restarts.
     /// </summary>
     public static string AnalogSendKind(int code) => code switch
     {
-        1 or 2 => "none",
+        1 => "cc",
+        2 => "pitchbend",
         5 => "aftertouch",
         _ => "cc",
     };
@@ -490,8 +833,8 @@ public sealed class Config
                 Send = "none", Channel = 3, Number = 21 + i, From = 0, To = 127,
             };
 
-        // Expression, sustain and aftertouch only arrive on the analog stream in Automap.
-        // Mod wheel and pitch bend already go out the synth's MIDI port.
+        // All five performance controls share the virtual route with the keyboard and
+        // mapped panel controls; the DAW needs only one stable MIDI input.
         foreach (var (code, name, cc) in AnalogControls)
             page.Analog[code.ToString()] = new Mapping
             {
@@ -588,7 +931,8 @@ public sealed class Config
                 if (!int.TryParse(kv.Key, out int code)) continue;
                 if (IsAnalogSwitch(code))
                 {
-                    if (kv.Value.Mode.StartsWith("relative") || kv.Value.Mode == "inverted")
+                    if (kv.Value.Mode?.StartsWith("relative", StringComparison.Ordinal) == true
+                        || kv.Value.Mode == "inverted")
                         kv.Value.Mode = "momentary";
                 }
                 else if (kv.Value.Mode is "momentary" or "toggle" or "step")
@@ -598,10 +942,8 @@ public sealed class Config
     }
 
     /// <summary>
-    /// Factory analog rows: expression / sustain / aftertouch that are still silent get
-    /// turned on; mod wheel / pitch bend that are still the stock CC 1 / pitch-bend row
-    /// (they already leave the synth's MIDI port) are turned off. Anything the user
-    /// changed is left alone.
+    /// Factory analog rows that are still silent are enabled on the stable virtual route.
+    /// A non-default assignment remains untouched.
     /// </summary>
     public void RepairAnalogFactorySends()
     {
@@ -613,11 +955,7 @@ public sealed class Config
             {
                 if (!page.Analog.TryGetValue(code.ToString(), out var m)) continue;
                 if (m.Channel != 1 || m.Number != cc) continue;
-                if (code is 1 or 2)
-                {
-                    if (m.Send is "cc" or "pitchbend") m.Send = "none";
-                }
-                else if (m.Send == "none")
+                if (m.Send == "none")
                     m.Send = AnalogSendKind(code);
             }
         }

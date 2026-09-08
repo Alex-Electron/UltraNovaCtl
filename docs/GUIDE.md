@@ -55,7 +55,7 @@ running; the port disappears when it closes.
 
 Two ways, both on [Releases](https://github.com/Alex-Electron/UltraNovaCtl/releases):
 
-**The installer** — `UltraNovaCtl-1.2.0-setup.exe`. Installs into
+**The installer** — `UltraNovaCtl-1.2.1-setup.exe`. Installs into
 `%LOCALAPPDATA%\Programs\UltraNovaCtl` **without asking for administrator rights**, adds a
 Start menu shortcut and an entry in Installed apps, offers to start with Windows, and tells
 you whether the driver and a virtual port are there before it finishes. Per-user on purpose:
@@ -99,14 +99,22 @@ needs it — not for the driver, not for anything.
 
 The window title changes to `connected`, the synth's display fills with labels,
 and the rings under the encoders answer your fingers. In the DAW, enable the loopMIDI port
-as an input and tick both **Remote** and **Track** for it.
+as an input and tick both **Remote** and **Track** for it. Leave **Sync** off.
+
+Then untick the direct `UltraNova` input **in that DAW**. Keyboard notes, velocity and
+polyphonic pressure are forwarded through loopMIDI along with the mapped controls, so
+leaving both inputs enabled gives the DAW every note twice. This is about one DAW's input
+list, not about the device: we read the keyboard from the instrument's private Port 1 pin
+and never touch the public WinMM `UltraNova` pair, which stays available to the native
+UltraNova Editor, the Librarian, and any other DAW at the same time.
 
 Turn encoder 1. The DAW should show CC 21 moving.
 
 That is the default map: the ten encoders on **channel 1**, CC 21–30 in panel order — the
 eight on 21–28, the filter knob on 29, the patch dial on 30 — and the panel buttons on
 **channel 2**, each one at CC 20 + its button code, so `LOCK` (code 6) is CC 26 and the dial
-push (code 39) is CC 59. Touch, mod wheel and pitch bend start disabled. Aftertouch, expression and sustain send. Change any of it as below.
+push (code 39) is CC 59. Touch starts disabled. Mod wheel, pitch bend, aftertouch,
+expression and sustain all travel through loopMIDI. Change any of it as below.
 
 ---
 
@@ -359,9 +367,9 @@ busy for a while, and that looks exactly like the DAW deciding to stop listening
 | *"Automap is not running"* on the synth's display | Nothing is answering it. Either this program is not connected, or the stock Automap is still running and got there first. |
 | Title stays `not connected` | The instrument is in SYNTH, the Novation driver is missing (§1.1), or the stock Automap has the endpoint (§1.4). |
 | The synth responds but the DAW hears nothing | Press **Test**. If a MIDI monitor sees CC 21 and the DAW does not, the DAW's own port connection is broken — restart the DAW. Nothing here can repair a connection from the outside. |
-| The DAW stopped receiving after restarting this program | The previous instance was killed rather than closed, and the port is still held. Wait, or press **Reinit**. |
+| The DAW stopped receiving after restarting this program | The program automatically retries a busy or stale MIDI output. It should recover within a few seconds; **Reinit** remains available for a manual check. |
 | loopMIDI port is missing from the DAW | The DAW was started before the port existed. Restart the DAW. |
 | Nothing from the mod wheel or the pedals | They are silent until the host enables them. That happens automatically on connect; press **Reinit** if it did not. |
-| Encoders work, notes do not | Notes travel on the instrument's ordinary MIDI port, not through this program. Enable `UltraNova` as a second input in the DAW alongside the loopMIDI port. |
+| Encoders work, notes do not | Use `loopMIDI Port` as the track input. UltraNovaCtl forwards the keyboard, wheels, pedals and aftertouch there; the direct `UltraNova` input should be disabled because its old-driver handle does not survive an Automap-host restart. |
 | The synth is stuck in Automap mode | Press **SYNTH** on the instrument. It cannot be done from software — the stock Automap could not do it either. |
 | A DIN-connected synth does not respond | The UltraNova's DIN sockets are not bridged to USB. Its own guide says so plainly: it is not a computer MIDI interface. Use a separate USB-MIDI interface. |

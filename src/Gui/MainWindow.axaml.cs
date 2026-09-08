@@ -70,6 +70,7 @@ public partial class MainWindow : Window
         Enqueue("learn: assigned, switching off (use Latch to keep going)");
     }
     bool _logDirty;
+    bool _loadingPorts;
     object _selected;                      // EncoderTile or ButtonTile
     bool _loadingSelection;                // suppress write-back while filling the fields
 
@@ -81,7 +82,8 @@ public partial class MainWindow : Window
     ComboBox _selPick, _selMode, _selChannel, _selTransport;
     ComboBox _touchSend, _touchChannel, _touchPick, _touchMode, _touchTransport;
     TextBox _touchOff, _touchOn, _touchKey, _touchNumber;
-    TextBlock _touchNumberLabel, _fromLabel, _toLabel, _pointsLabel, _stepSizeText;
+    TextBlock _touchNumberLabel, _touchOffLabel, _touchOnLabel;
+    TextBlock _fromLabel, _toLabel, _pointsLabel, _stepSizeText;
     TabItem _touchTab;
     TextBlock _selBinding, _selValue, _numberLabel;
     TextBlock _selName;
@@ -154,6 +156,8 @@ public partial class MainWindow : Window
         _touchKey = this.FindControl<TextBox>("TouchKey");
         _touchNumber = this.FindControl<TextBox>("TouchNumber");
         _touchNumberLabel = this.FindControl<TextBlock>("TouchNumberLabel");
+        _touchOffLabel = this.FindControl<TextBlock>("TouchOffLabel");
+        _touchOnLabel = this.FindControl<TextBlock>("TouchOnLabel");
         _touchOff = this.FindControl<TextBox>("TouchOff");
         _touchOn = this.FindControl<TextBox>("TouchOn");
         _touchMode = this.FindControl<ComboBox>("TouchMode");
@@ -200,6 +204,8 @@ public partial class MainWindow : Window
         // the control sends: controller numbers, note names, or nothing at all.
 
         _engine.Config = Config.Load();
+        if (!string.IsNullOrWhiteSpace(Config.LastLoadWarning))
+            Enqueue("WARNING: " + Config.LastLoadWarning);
         if (Program.StartWithDebugTools) _engine.Config.ShowDebugTools = true;
         ApplyDebugTools();
         // Worth saying out loud. It is beside the executable normally, but moves to the
@@ -224,7 +230,10 @@ public partial class MainWindow : Window
         _logClear.Click += (_, _) => ClearLog();
         _echoLeds.IsChecked = _engine.Config.EchoButtonLeds;
         _echoLeds.IsCheckedChanged += (_, _) =>
+        {
             _engine.Config.EchoButtonLeds = _echoLeds.IsChecked == true;
+            _engine.RefreshPersistentButtonLeds(force: true);
+        };
         WireLogMenu();
         _export.Click += async (_, _) => await ExportAsync();
         _import.Click += async (_, _) => await ImportAsync();
@@ -321,6 +330,10 @@ public partial class MainWindow : Window
         };
 
         _engine.Log += (_, s) => Enqueue(s);
+        _engine.MidiSent += (_, s) =>
+        {
+            if (_engine.Config.ShowDebugTools) Enqueue("out: " + s);
+        };
         _learnClock = new MidiClockMeter(Enqueue, "in: ");
         _engine.EncoderMoved += (_, e) => OnEncoder(e);
         _engine.EncoderTouched += (_, e) => OnTouch(e);
@@ -340,9 +353,11 @@ public partial class MainWindow : Window
         _engine.PortMidi += (_, e) =>
         {
             ShowIncomingOnFader(e);
-            bool noisy = e.IsNote || e.IsPitchBend || e.Kind == 0xD0
-                         || (e.IsCc && e.Data1 is 1 or 11 or 64);
-            if (noisy && !_engine.Config.ShowDebugTools) return;
+            // The ordinary synth port also emits implementation-detail bursts while
+            // SYNTH/AUTOMAP changes mode (NRPN select/data entry, All Sound Off, etc.).
+            // Keep the normal log at the user-event level; the full wire trace belongs
+            // to the debug bench, just like outgoing MIDI and the analog stream.
+            if (!_engine.Config.ShowDebugTools) return;
             string extra = e.IsCc ? _portNrpn.Annotate(e.Channel, e.Data1, e.Data2) : "";
             Enqueue("midi: " + e.Describe() + extra);
         };
@@ -528,12 +543,30 @@ public partial class MainWindow : Window
         ("step",      "Step"),
     };
 
+    /// <summary>A note is either held by the finger or latched until the next press.</summary>
+    static readonly (string value, string label)[] NoteSwitchModes =
+    {
+        ("momentary", "Momentary"),
+        ("toggle",    "Toggle"),
+    };
+
+    string SelectedSendKind
+    {
+        get
+        {
+            int index = _selSend.SelectedIndex;
+            return index >= 0 && index < SendKinds.Length ? SendKinds[index].value : "cc";
+        }
+    }
+
     bool SelectionIsSwitch =>
         _selected is ButtonTile
         || (_selected is AnalogTile analog && analog.IsSwitch);
 
     (string value, string label)[] ModeKinds =>
-        SelectionIsSwitch ? SwitchModes : ContinuousModes;
+        SelectionIsSwitch && SelectedSendKind == "note"
+            ? NoteSwitchModes
+            : SelectionIsSwitch ? SwitchModes : ContinuousModes;
 
     int ModeIndex(string value)
     {
@@ -551,6 +584,7 @@ public partial class MainWindow : Window
         string kind = si >= 0 && si < SendKinds.Length ? SendKinds[si].value : "cc";
 
         bool disabled = kind == "none";
+        bool isNote = kind == "note";
         bool isKey = kind == "key";
         bool isTransport = kind == "transport";
         bool usesPick = kind is "cc" or "note" or "cc14";
@@ -576,8 +610,34 @@ public partial class MainWindow : Window
         _selNumber.Width = usesTypedNumber ? 88 : 0;
         _selChannel.IsEnabled = !disabled && !isKey && !isTransport;
 
+        if (SelectionIsSwitch && isNote)
+        {
+            _fromLabel.Text = "Release velocity";
+            _toLabel.Text = "Attack velocity";
+            ToolTip.SetTip(_selFrom, "Velocity carried by the Note Off message (usually 0)");
+            ToolTip.SetTip(_selTo, "Fixed velocity carried by Note On (1–127)");
+        }
+        else
+        {
+            _fromLabel.Text = SelectionIsSwitch ? "Release" : "From";
+            _toLabel.Text = SelectionIsSwitch ? "Press" : "To";
+            ToolTip.SetTip(_selFrom,
+                "Lowest value sent, or what a released switch sends. Set it above the other field to reverse the control.");
+            ToolTip.SetTip(_selTo, "Highest value sent, or what a pressed switch sends.");
+        }
+
         bool loading = _loadingSelection;
         _loadingSelection = true;
+        Mapping selected = _selected switch
+        {
+            EncoderTile e => e.Mapping,
+            AnalogTile a => a.Mapping,
+            ButtonTile b => b.Mapping,
+            _ => null,
+        };
+        var modes = ModeKinds;
+        _selMode.ItemsSource = modes.Select(m => m.label).ToList();
+        _selMode.SelectedIndex = selected == null ? -1 : ModeIndex(selected.Mode);
         _selPick.ItemsSource = kind switch
         {
             "note" => Enumerable.Range(0, 128).Select(NoteName).ToList(),
@@ -684,19 +744,34 @@ public partial class MainWindow : Window
         string wantOut = _portBox.SelectedItem as string;
         string wantIn = _inPortBox.SelectedItem as string;
 
-        var outs = MidiOut.PortNames();
-        _portBox.ItemsSource = outs;
-        int oi = wantOut == null ? -1 : outs.FindIndex(n => n == wantOut);
-        _portBox.SelectedIndex = oi >= 0 ? oi : (outs.Count > 0 ? 0 : -1);
+        List<string> outs;
+        List<string> ins;
+        _loadingPorts = true;
+        try
+        {
+            outs = MidiOut.PortNames();
+            _portBox.ItemsSource = outs;
+            int oi = wantOut == null ? -1 : outs.FindIndex(n => n == wantOut);
+            _portBox.SelectedIndex = oi >= 0 ? oi : (outs.Count > 0 ? 0 : -1);
 
-        var ins = MidiIn.PortNames();
-        ins.Insert(0, "(none)");
-        bool wasOpen = _midiIn.IsOpen;
-        _midiIn.Close();
-        _inPortBox.ItemsSource = ins;
-        int ii = wantIn == null ? 0 : ins.FindIndex(n => n == wantIn);
-        _inPortBox.SelectedIndex = ii >= 0 ? ii : 0;
-        if (wasOpen && ii > 0) OpenInput();
+            ins = MidiIn.PortNames();
+            ins.Insert(0, "(none)");
+            bool wasOpen = _midiIn.IsOpen;
+            _midiIn.Close();
+            _inPortBox.ItemsSource = ins;
+            int ii = wantIn == null ? 0 : ins.FindIndex(n => n == wantIn);
+            _inPortBox.SelectedIndex = ii >= 0 ? ii : 0;
+            if (wasOpen && ii > 0) OpenInput();
+        }
+        finally
+        {
+            _loadingPorts = false;
+        }
+
+        // Reopen only when the rescan actually had to choose a different destination.
+        // Reassigning the same ComboBox item used to stall the MIDI reader on every click.
+        string selectedOut = _portBox.SelectedItem as string;
+        if (!string.Equals(selectedOut, wantOut, StringComparison.Ordinal)) OnPortChanged();
 
         Enqueue($"rescanned: {outs.Count} outputs, {ins.Count - 1} inputs");
     }
@@ -838,6 +913,7 @@ public partial class MainWindow : Window
             if (page.Buttons == null || !page.Buttons.TryGetValue(kv.Key.ToString(), out var m))
                 m = new Mapping { Send = "none", Channel = 2, Number = 20 + kv.Key };
             var tile = new ButtonTile(kv.Key, kv.Value, m);
+            RefreshButtonRuntime(tile);
             tile.Root.PointerPressed += (_, _) => Select(tile);
             _buttons[kv.Key] = tile;
             _buttonWrap.Children.Add(tile.Root);
@@ -1128,6 +1204,7 @@ public partial class MainWindow : Window
                 };
             string name = Config.KnownButtons.TryGetValue(code, out var n) ? n : $"code {code}";
             var tile = new ButtonTile(code, name, m);
+            RefreshButtonRuntime(tile);
             tile.Root.PointerPressed += (_, _) => Select(tile);
             _buttons[code] = tile;
             _debugAppButtons.Children.Add(tile.Root);
@@ -1217,6 +1294,7 @@ public partial class MainWindow : Window
         int si = _touchSend.SelectedIndex;
         string kind = si >= 0 && si < SendKinds.Length ? SendKinds[si].value : "cc";
         bool disabled = kind == "none";
+        bool isNote = kind == "note";
         bool isKey = kind == "key";
         bool isTransport = kind == "transport";
         bool usesPick = kind is "cc" or "note" or "cc14";
@@ -1240,6 +1318,14 @@ public partial class MainWindow : Window
         _touchOff.IsEnabled = !disabled && !oneShot;
         _touchOn.IsEnabled = !disabled && !oneShot;
         _touchMode.IsEnabled = !disabled && !oneShot;
+        _touchOffLabel.Text = isNote ? "Release velocity" : "Released";
+        _touchOnLabel.Text = isNote ? "Attack velocity" : "Touched";
+        ToolTip.SetTip(_touchOff, isNote
+            ? "Velocity carried by the Note Off message (usually 0)"
+            : "Sent when the finger leaves");
+        ToolTip.SetTip(_touchOn, isNote
+            ? "Fixed velocity carried by Note On (1–127)"
+            : "Sent when the finger lands");
 
         bool loading = _loadingSelection;
         _loadingSelection = true;
@@ -1299,7 +1385,8 @@ public partial class MainWindow : Window
         if (_touchTransport.SelectedIndex >= 0)
             m.TransportCommand = Transport.All[_touchTransport.SelectedIndex].Id;
         if (int.TryParse(_touchOff.Text, out int off)) m.From = Math.Clamp(off, 0, 127);
-        if (int.TryParse(_touchOn.Text, out int on)) m.To = Math.Clamp(on, 0, 127);
+        if (int.TryParse(_touchOn.Text, out int on))
+            m.To = m.Send == "note" ? Math.Clamp(on, 1, 127) : Math.Clamp(on, 0, 127);
         m.Mode = _touchMode.SelectedIndex == 1 ? "toggle" : "momentary";
     }
 
@@ -1313,6 +1400,10 @@ public partial class MainWindow : Window
             AnalogTile a => a.Mapping,
             _ => ((ButtonTile)_selected).Mapping,
         };
+        string oldSend = m.Send;
+        string oldMode = m.Mode;
+        int oldChannel = m.Channel;
+        int oldNumber = m.Number;
         m.Label = new string((_selLabel.Text ?? "").Where(c => c >= 32 && c <= 126).ToArray());
         int si = _selSend.SelectedIndex;
         m.Send = si >= 0 && si < SendKinds.Length ? SendKinds[si].value : "cc";
@@ -1328,11 +1419,17 @@ public partial class MainWindow : Window
             m.TransportCommand = Transport.All[_selTransport.SelectedIndex].Id;
         if (_selChannel.SelectedIndex >= 0) m.Channel = _selChannel.SelectedIndex + 1;
         if (int.TryParse(_selFrom.Text, out int f)) m.From = Math.Clamp(f, 0, 127);
-        if (int.TryParse(_selTo.Text, out int t)) m.To = Math.Clamp(t, 0, 127);
+        if (int.TryParse(_selTo.Text, out int t))
+            m.To = m.Send == "note" && SelectionIsSwitch
+                ? Math.Clamp(t, 1, 127)
+                : Math.Clamp(t, 0, 127);
         var kinds = ModeKinds;
         int mi = _selMode.SelectedIndex;
         m.Mode = mi >= 0 && mi < kinds.Length ? kinds[mi].value
                : (SelectionIsSwitch ? "momentary" : "normal");
+        if (oldSend == "note" && (m.Send != "note" || m.Mode != oldMode
+            || m.Channel != oldChannel || m.Number != oldNumber))
+            _engine.ReleaseNote(m);
         if (int.TryParse(_selPoints.Text, out int pts)) m.Points = Math.Clamp(pts, 2, 128);
         if (_selected is AnalogTile analogSel && !analogSel.IsSwitch)
             m.Pickup = _selPickup.IsChecked == true;
@@ -1355,7 +1452,11 @@ public partial class MainWindow : Window
                     else _analogPickup.Remove(ana.Code);
                 }
                 break;
-            case ButtonTile btn: btn.RefreshCaption(); break;
+            case ButtonTile btn:
+                btn.RefreshCaption();
+                RefreshButtonRuntime(btn);
+                _engine.RefreshPersistentButtonLeds();
+                break;
         }
 
         if (_engine.Connected) _engine.DrawLabels();
@@ -1441,6 +1542,7 @@ public partial class MainWindow : Window
                 {
                     t.SetPressed(_btnState.TryGetValue(code, out var d) && d);
                     if (_btnSent.TryGetValue(code, out int v)) t.SetValue(v);
+                    RefreshButtonRuntime(t);
                 }
 
         if (analogs != null)
@@ -1456,6 +1558,17 @@ public partial class MainWindow : Window
         if (_demo != null)
             _demo.Content = _engine.DemoRunning ? "Stop" : "Demo";
         TryRunProbeFile();
+    }
+
+    /// <summary>
+    /// Apply the engine's per-mapping Toggle/Step state to a freshly built or changed
+    /// tile. This is what makes the indication survive page switches.
+    /// </summary>
+    void RefreshButtonRuntime(ButtonTile tile)
+    {
+        bool persistent = _engine.TryGetPersistentSwitchState(
+            tile.Mapping, out bool active, out int value);
+        tile.SetPersistentState(persistent, active, value);
     }
 
     /// <summary>
@@ -1482,7 +1595,19 @@ public partial class MainWindow : Window
     /// <summary>Silent connection attempt; noisy only when the state actually changes.</summary>
     void TryAutoConnect()
     {
-        if (_engine.Connected || _connecting) return;
+        if (_connecting) return;
+        if (_engine.Connected)
+        {
+            if (_engine.OutputReady) return;
+            _connecting = true;
+            try
+            {
+                if (_engine.ReopenOutputs())
+                    Enqueue($"MIDI output restored: {_engine.Config.OutputPort}");
+            }
+            finally { _connecting = false; }
+            return;
+        }
         _connecting = true;
         try
         {
@@ -1524,6 +1649,7 @@ public partial class MainWindow : Window
 
         if (_engine.Start())
         {
+            _retry?.Start();          // also watches and restores the MIDI output
             Enqueue("USB host open. Press AUTOMAP on the synth.");
             RefreshHostChrome();
         }
@@ -1536,6 +1662,7 @@ public partial class MainWindow : Window
 
     void OnPortChanged()
     {
+        if (_loadingPorts) return;
         if (_portBox.SelectedItem is not string name) return;
         _engine.Config.OutputPort = name;
         if (_engine.Connected) { _engine.ReopenOutputs(); Enqueue($"output switched to \"{name}\""); }
@@ -1558,7 +1685,7 @@ public partial class MainWindow : Window
         _engine.Config.ClearBank(_engine.BankIndex);
         _engine.SetPage(_engine.PageIndex);
         ReloadPage();
-        if (_engine.Connected) { _engine.ReopenOutputs(); _engine.DrawLabels(); }
+        if (_engine.Connected) _engine.DrawLabels();
         Enqueue($"cleared every assignment on {_engine.CurrentBank.Name} — navigation still works");
     }
 
@@ -1570,7 +1697,7 @@ public partial class MainWindow : Window
         _engine.Config.RevertPage(bank, page);
         _engine.SetPage(page);
         ReloadPage();
-        if (_engine.Connected) { _engine.ReopenOutputs(); _engine.DrawLabels(); }
+        if (_engine.Connected) _engine.DrawLabels();
         Enqueue($"reverted {_engine.CurrentBank.Name} page {page + 1} to the factory map");
     }
 
@@ -1631,9 +1758,10 @@ public partial class MainWindow : Window
                 loaded = AutomapImport.Load(path, out string what);
                 Enqueue($"read Novation mapping: {what}");
             }
-            else loaded = Config.Load(path);
+            else loaded = Config.LoadStrict(path);
             string keepPort = _engine.Config.OutputPort;
             loaded.OutputPort = keepPort;
+            _engine.ReleaseAllNotes();
             _engine.Config = loaded;
 
             _selected = null;
@@ -1657,7 +1785,7 @@ public partial class MainWindow : Window
         {
             _engine.Config.Save();
             Enqueue($"configuration saved: {Config.DefaultPath}");
-            if (_engine.Connected) { _engine.ReopenOutputs(); _engine.DrawLabels(); }
+            if (_engine.Connected) _engine.DrawLabels();
         }
         catch (Exception e) { Enqueue("save failed: " + e.Message); }
     }
@@ -2163,15 +2291,22 @@ public sealed class ButtonTile
     public string Name { get; }
     public Mapping Mapping { get; }
 
-    readonly TextBlock _caption, _value;
+    readonly TextBlock _title, _caption, _value;
     static readonly IBrush Idle = new SolidColorBrush(Color.Parse("#14141A"));
     static readonly IBrush Down = new SolidColorBrush(Color.Parse("#3A2E14"));
+    static readonly IBrush Latched = new SolidColorBrush(Color.Parse("#2A2416"));
     static readonly IBrush Picked = new SolidColorBrush(Color.Parse("#1B2430"));
     static readonly IBrush IdleEdge = new SolidColorBrush(Color.Parse("#22222C"));
     static readonly IBrush DownEdge = new SolidColorBrush(Color.Parse("#E8A33D"));
+    static readonly IBrush LatchedEdge = new SolidColorBrush(Color.Parse("#C98724"));
     static readonly IBrush PickedEdge = new SolidColorBrush(Color.Parse("#4C7FA8"));
+    static readonly IBrush TitleText = new SolidColorBrush(Color.Parse("#C8C8D4"));
+    static readonly IBrush ActiveText = new SolidColorBrush(Color.Parse("#F5C87A"));
+    static readonly IBrush ValueText = new SolidColorBrush(Color.Parse("#8A8A9A"));
 
-    bool _selected, _pressed;
+    bool _selected, _pressed, _persistent, _active;
+    int _persistentValue;
+    int? _lastValue;
 
     public bool Selected { get => _selected; set { _selected = value; Restyle(); } }
 
@@ -2179,22 +2314,22 @@ public sealed class ButtonTile
     {
         Code = code; Name = name; Mapping = m;
 
-        var title = new TextBlock
+        _title = new TextBlock
         {
             Text = name, FontSize = 11,
             TextWrapping = TextWrapping.Wrap,
-            Foreground = new SolidColorBrush(Color.Parse("#C8C8D4")),
+            Foreground = TitleText,
         };
         // What the button last sent. In toggle and step modes this is the only way to
         // see where it currently stands.
         _value = new TextBlock
         {
             Text = "", FontSize = 11, FontFamily = new FontFamily("Consolas,monospace"),
-            Foreground = new SolidColorBrush(Color.Parse("#8A8A9A")),
+            Foreground = ValueText,
             HorizontalAlignment = HorizontalAlignment.Right,
         };
         var head = new Grid();
-        head.Children.Add(title);
+        head.Children.Add(_title);
         head.Children.Add(_value);
 
         _caption = new TextBlock
@@ -2217,12 +2352,48 @@ public sealed class ButtonTile
 
     public void SetPressed(bool down) { _pressed = down; Restyle(); }
 
-    public void SetValue(int v) => _value.Text = v.ToString();
+    public void SetValue(int v)
+    {
+        _lastValue = v;
+        RefreshValue();
+    }
+
+    /// <summary>
+    /// A Toggle/Step has a logical state beyond the physical press. Show it as a
+    /// persistent panel-like lamp; momentary controls keep their brief press flash.
+    /// </summary>
+    public void SetPersistentState(bool persistent, bool active, int value)
+    {
+        _persistent = persistent;
+        _active = persistent && active;
+        _persistentValue = value;
+        RefreshValue();
+        Restyle();
+    }
+
+    void RefreshValue()
+    {
+        if (_persistent && Mapping.Mode == "toggle")
+        {
+            _value.Text = _active ? "ON" : "OFF";
+            _value.Foreground = _active ? ActiveText : ValueText;
+            _value.FontWeight = _active ? FontWeight.SemiBold : FontWeight.Normal;
+            return;
+        }
+
+        _value.Text = (_persistent ? _persistentValue : _lastValue)?.ToString() ?? "";
+        _value.Foreground = _active ? ActiveText : ValueText;
+        _value.FontWeight = _active ? FontWeight.SemiBold : FontWeight.Normal;
+    }
 
     void Restyle()
     {
-        Root.Background = _pressed ? Down : _selected ? Picked : Idle;
-        Root.BorderBrush = _pressed ? DownEdge : _selected ? PickedEdge : IdleEdge;
+        Root.Background = _pressed ? Down : _active ? Latched : _selected ? Picked : Idle;
+        // Blue remains the editing selection; the amber fill and ON marker continue to
+        // communicate the independent Toggle state underneath it.
+        Root.BorderBrush = _pressed ? DownEdge : _selected ? PickedEdge
+            : _active ? LatchedEdge : IdleEdge;
+        _title.Foreground = _active ? ActiveText : TitleText;
     }
 
     public void RefreshCaption() => _caption.Text = Mapping.Caption;

@@ -86,18 +86,51 @@ public sealed class AutomapEngine : IDisposable
     public event EventHandler<MidiInEventArgs> PortMidi;
     public event EventHandler<string> Log;
 
+    /// <summary>Every message that left through a MIDI output, already formatted. Kept
+    /// separate from <see cref="Log"/> so the debug view can show the outgoing stream
+    /// without burying the ordinary log in it.</summary>
+    public event EventHandler<string> MidiSent;
+
     MidiClockMeter _clock;
     MidiClockMeter Clock => _clock ??= new MidiClockMeter(Say, "midi: ");
 
     readonly int[] _values = new int[EncoderCount];
     readonly bool[] _touched = new bool[EncoderCount];
-    readonly Dictionary<int, bool> _toggles = new();
-    readonly Dictionary<int, int> _steps = new();
+    // Latched switch state is keyed by the mapping object, not by the button code.
+    // Each page carries its own Mapping instances, so a toggle on page two no longer
+    // inherits where the same button stands on page one. Mapping does not override
+    // Equals, so reference identity is exactly the key wanted here.
+    readonly Dictionary<Mapping, bool> _toggles = new();
+    readonly Dictionary<Mapping, int> _steps = new();
+
+    /// <summary>Codes currently held lit for a latched switch, so a page change can
+    /// put out the ones that no longer apply instead of leaving a lie on the panel.</summary>
+    readonly HashSet<int> _persistentLedCodes = new();
+    readonly object _switchLock = new();
+
+    // A note that was sent has to be released, and the release must carry the channel
+    // and number that were actually pressed - the mapping may have been edited in
+    // between - so what went out is remembered rather than derived again.
+    readonly Dictionary<Mapping, ActiveNote> _activeNotes = new();
+
+    /// <summary>Keyboard notes passed through to the outputs, as (channel &lt;&lt; 7) | number.</summary>
+    readonly HashSet<int> _forwardedNotes = new();
+    readonly object _noteLock = new();
+
     readonly Dictionary<int, bool> _analogDown = new();
     readonly Dictionary<int, int> _analogRaw = new();
     readonly Dictionary<int, AnalogPickup> _analogPick = new();
     readonly Dictionary<int, long> _analogStreamMs = new();
+
+    /// <summary>Guards the analog state above. Never held across a send - see OnAnalog.</summary>
     readonly object _analogLock = new();
+
+    /// <summary>
+    /// Orders the sends that come out of the analog path, which both read threads can
+    /// reach. Taken only by <see cref="OnAnalog"/>, and never by the UI, so unlike
+    /// <see cref="_analogLock"/> it cannot pair with the window's own lock into a cycle.
+    /// </summary>
+    readonly object _analogSendLock = new();
 
     struct AnalogPickup
     {
@@ -107,7 +140,30 @@ public sealed class AutomapEngine : IDisposable
         /// <summary>Scaled position when pickup was armed. int.MinValue = not yet seen.</summary>
         public int OriginScaled;
     }
+
+    /// <summary>What a note mapping actually put on the wire, kept so the release
+    /// matches the press even after the assignment was edited.</summary>
+    readonly struct ActiveNote
+    {
+        public readonly byte Channel;
+        public readonly byte Number;
+        public readonly byte ReleaseVelocity;
+
+        public ActiveNote(byte channel, byte number, byte releaseVelocity)
+        {
+            Channel = channel;
+            Number = number;
+            ReleaseVelocity = releaseVelocity;
+        }
+    }
+
     readonly List<MidiOut> _outs = new();
+    readonly object _outsLock = new();
+
+    /// <summary>Last output-open failure. A port that is simply not there yet is worth
+    /// saying once, not on every retry.</summary>
+    string _lastOutputError = "";
+
     readonly object _writeLock = new();
 
     IntPtr _filter = IntPtr.Zero, _readPin = IntPtr.Zero, _writePin = IntPtr.Zero;
@@ -134,6 +190,16 @@ public sealed class AutomapEngine : IDisposable
     public bool Connected { get; private set; }
     public bool AutomapActive { get; private set; }
     public bool DemoRunning => _demo;
+
+    /// <summary>
+    /// True while at least one MIDI output is open and has not failed. The UI polls this
+    /// to notice a virtual port that went away - loopMIDI disappearing takes the handle
+    /// with it - and to re-open without the user having to press anything.
+    /// </summary>
+    public bool OutputReady
+    {
+        get { lock (_outsLock) return _outs.Any(o => o.IsUsable); }
+    }
 
     /// <summary>
     /// Ceiling on how many lamps Demo lights together. Hardware starts pumping
@@ -179,6 +245,8 @@ public sealed class AutomapEngine : IDisposable
         encoder >= 0 && encoder < EncoderCount ? _values[encoder] : 0;
 
     void Say(string s) => Log?.Invoke(this, s);
+
+    void TraceMidi(string s) => MidiSent?.Invoke(this, s);
 
     /// <summary>
     /// Display paint (F0 02 …) and the Automap handshake are already accounted for
@@ -236,20 +304,51 @@ public sealed class AutomapEngine : IDisposable
 
         // Port 1 carries the keyboard, wheels and aftertouch. Optional: if the driver
         // will not give us a second reader we simply carry on without it.
+        //
+        // The filter exposes Port 1 twice. Pins 4 and 8 are the pair wdmaud holds open
+        // to publish the system WinMM port called "UltraNova", and taking those would
+        // shut a DAW or Novation's own software out of the instrument. Pins 6 and 10
+        // are the same stream behind a private Novation subformat that the system
+        // never claims. So the private one is looked for first and the public pair is
+        // only a fallback - stated in the log, because it is the difference between
+        // coexisting and stealing the device.
+        Pins.PinInfo chosen = null;
+        Guid chosenSub = Guid.Empty;
         foreach (var p1 in pins)
         {
-            if (!p1.IsMusic || p1.Ranges.Count == 0) continue;
-            if (p1.Name.IndexOf("Port 1", StringComparison.OrdinalIgnoreCase) < 0) continue;
-            if (p1.DataFlow != Pins.DATAFLOW_OUT) continue;
-            _midiPin = OpenPin(p1.Id, false, p1.Ranges[0].SubFormat);
-            if (_midiPin != IntPtr.Zero)
+            if (!IsKeyboardPin(p1)) continue;
+            foreach (var range in p1.Ranges)
             {
-                Say($"MIDI port pin {p1.Id} open (notes, wheels, aftertouch)");
+                if (range.SubFormat != Ks.KSDATAFORMAT_SUBTYPE_NOVATION_PORT1) continue;
+                chosen = p1;
+                chosenSub = range.SubFormat;
+                break;
+            }
+            if (chosen != null) break;
+        }
+        if (chosen == null)
+        {
+            foreach (var p1 in pins)
+            {
+                if (!IsKeyboardPin(p1)) continue;
+                chosen = p1;
+                chosenSub = p1.Ranges[0].SubFormat;
                 break;
             }
         }
+        if (chosen != null)
+        {
+            _midiPin = OpenPin(chosen.Id, false, chosenSub);
+            if (_midiPin != IntPtr.Zero)
+            {
+                bool priv = chosenSub == Ks.KSDATAFORMAT_SUBTYPE_NOVATION_PORT1;
+                Say($"MIDI keyboard pin {chosen.Id} open " +
+                    $"({(priv ? "private port, WinMM free" : "standard MIDI")}); " +
+                    "notes forwarded to MIDI out");
+            }
+        }
         if (_midiPin == IntPtr.Zero)
-            Say("MIDI port pin unavailable - notes and wheels will not be shown");
+            Say("MIDI keyboard pin unavailable - notes cannot be forwarded");
 
         OpenOutputs();
 
@@ -269,18 +368,178 @@ public sealed class AutomapEngine : IDisposable
         return true;
     }
 
-    void OpenOutputs()
+    /// <summary>A Port 1 reader: the keyboard, wheels and aftertouch stream.</summary>
+    static bool IsKeyboardPin(Pins.PinInfo p) =>
+        p.IsMusic && p.Ranges.Count > 0 && p.DataFlow == Pins.DATAFLOW_OUT
+        && p.Name.IndexOf("Port 1", StringComparison.OrdinalIgnoreCase) >= 0;
+
+    /// <summary>
+    /// Open the configured outputs, then swap them in. The new list is built first and
+    /// the old handles are closed after the swap and outside the lock: closing a WinMM
+    /// handle can block, and doing that while holding <see cref="_outsLock"/> would
+    /// stall the read thread mid-note.
+    /// </summary>
+    bool OpenOutputs()
     {
-        foreach (var o in _outs) o.Dispose();
-        _outs.Clear();
+        var opened = new List<MidiOut>();
         foreach (string name in (Config.OutputPort ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries))
         {
             var mo = new MidiOut();
-            if (mo.Open(name.Trim())) { _outs.Add(mo); Say($"MIDI out: {mo.PortName}"); }
-            else Say("MIDI out: " + (mo.LastError.Length > 0
-                ? mo.LastError
-                : $"'{name.Trim()}' not found"));
+            if (mo.Open(name.Trim()))
+            {
+                mo.MessageSent += (_, e) => TraceMidi($"{e.PortName}: {e.Description} [{e.Hex}]");
+                opened.Add(mo);
+                Say($"MIDI out: {mo.PortName}");
+            }
+            else
+            {
+                string why = mo.LastError.Length > 0 ? mo.LastError : $"'{name.Trim()}' not found";
+                // The watchdog retries on a timer, so repeating the same complaint every
+                // few seconds would drown the log. Say it when it changes.
+                if (!string.Equals(why, _lastOutputError, StringComparison.Ordinal))
+                    Say("MIDI out: " + why + "; will retry automatically");
+                _lastOutputError = why;
+                mo.Dispose();
+            }
         }
+
+        MidiOut[] previous;
+        lock (_outsLock)
+        {
+            previous = _outs.ToArray();
+            _outs.Clear();
+            _outs.AddRange(opened);
+        }
+        foreach (var o in previous) o.Dispose();
+
+        if (opened.Count > 0) _lastOutputError = "";
+        return opened.Count > 0;
+    }
+
+    /// <summary>
+    /// Run one send against every open output. Returns true when it reached at least
+    /// one of them, which is what the note bookkeeping needs to know: a Note On that
+    /// never left must not be remembered as owing a release. One failing port does not
+    /// stop the others.
+    ///
+    /// The delegate reports whether the driver took the message, so an output that is
+    /// open but broken - a virtual cable whose handle went stale - counts as a failure
+    /// here rather than as delivery. Reporting success merely because the call did not
+    /// throw is what let a dead port collect notes that could never be released.
+    /// </summary>
+    bool SendToOutputs(Func<MidiOut, bool> send)
+    {
+        lock (_outsLock)
+        {
+            if (_outs.Count == 0) return false;
+            bool any = false;
+            foreach (var o in _outs)
+            {
+                try { any |= send(o); }
+                catch (Exception ex) { Say($"MIDI output '{o.PortName}' failed: {ex.Message}"); }
+            }
+            return any;
+        }
+    }
+
+    /// <summary>
+    /// Send a note for a mapping, remembering it so it can be released later. A second
+    /// gate on a mapping that is already sounding releases the first note rather than
+    /// stacking two: the panel has one button per mapping, so one note at a time is the
+    /// truth. Release velocity comes from the mapping's Release field on the press and
+    /// from the actual release on the way up.
+    /// </summary>
+    void SendTrackedNote(Mapping mapping, byte channel, byte number, byte velocity, bool gate)
+    {
+        lock (_noteLock)
+        {
+            if (gate)
+            {
+                if (_activeNotes.TryGetValue(mapping, out var previous))
+                    SendToOutputs(o => o.Send((byte)(0x80 | previous.Channel),
+                        previous.Number, previous.ReleaseVelocity));
+
+                if (SendToOutputs(o => o.Send((byte)(0x90 | channel), number, velocity)))
+                    _activeNotes[mapping] =
+                        new ActiveNote(channel, number, (byte)Math.Clamp(mapping.From, 0, 127));
+                else
+                    _activeNotes.Remove(mapping);
+            }
+            else
+            {
+                var target = _activeNotes.Remove(mapping, out var was)
+                    ? new ActiveNote(was.Channel, was.Number, velocity)
+                    : new ActiveNote(channel, number, velocity);
+                SendToOutputs(o => o.Send((byte)(0x80 | target.Channel),
+                    target.Number, target.ReleaseVelocity));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Let go of one mapping's note and clear its latch. Called when an assignment is
+    /// edited underneath a held button - otherwise the note hangs with nothing left
+    /// that knows how to release it.
+    /// </summary>
+    public void ReleaseNote(Mapping mapping)
+    {
+        if (mapping == null) return;
+        lock (_noteLock)
+        {
+            if (_activeNotes.Remove(mapping, out var note))
+                SendToOutputs(o => o.Send((byte)(0x80 | note.Channel),
+                    note.Number, note.ReleaseVelocity));
+        }
+        lock (_switchLock) _toggles[mapping] = false;
+        RefreshPersistentButtonLeds();
+    }
+
+    /// <summary>
+    /// Let go of every note this engine is holding. Page and bank changes, leaving
+    /// Automap and shutdown all go through here: a note held by a button that is about
+    /// to mean something else would sound forever.
+    /// </summary>
+    public void ReleaseAllNotes()
+    {
+        Mapping[] held;
+        lock (_noteLock)
+        {
+            held = _activeNotes.Keys.ToArray();
+            foreach (var note in _activeNotes.Values)
+                SendToOutputs(o => o.Send((byte)(0x80 | note.Channel),
+                    note.Number, note.ReleaseVelocity));
+            _activeNotes.Clear();
+        }
+        if (held.Length == 0) return;
+        lock (_switchLock)
+            foreach (var m in held) _toggles[m] = false;
+        RefreshPersistentButtonLeds();
+    }
+
+    /// <summary>Silence keyboard notes that were passed through, for the same reason.</summary>
+    void ReleaseForwardedNotes()
+    {
+        lock (_noteLock)
+        {
+            foreach (int packed in _forwardedNotes)
+            {
+                byte ch = (byte)((packed >> 7) & 0x0F);
+                byte num = (byte)(packed & 0x7F);
+                SendToOutputs(o => o.Send((byte)(0x80 | ch), num, 0));
+            }
+            _forwardedNotes.Clear();
+        }
+    }
+
+    void CloseOutputs()
+    {
+        MidiOut[] closing;
+        lock (_outsLock)
+        {
+            closing = _outs.ToArray();
+            _outs.Clear();
+        }
+        foreach (var o in closing) o.Dispose();
     }
 
     /// <summary>
@@ -290,20 +549,36 @@ public sealed class AutomapEngine : IDisposable
     /// </summary>
     public bool SendTest(int channel = 1, int cc = 21)
     {
-        if (_outs.Count == 0) { Say("no MIDI output open"); return false; }
         byte st = (byte)(0xB0 | (Math.Clamp(channel, 1, 16) - 1));
-        foreach (var o in _outs)
+        if (!SendToOutputs(o =>
+            {
+                bool up = o.Send(st, (byte)cc, 127);
+                Thread.Sleep(60);
+                // Both halves must land, or the test would report success while leaving
+                // the controller parked at 127.
+                return o.Send(st, (byte)cc, 0) && up;
+            }))
         {
-            o.Send(st, (byte)cc, 127);
-            Thread.Sleep(60);
-            o.Send(st, (byte)cc, 0);
+            Say("no MIDI output open");
+            return false;
         }
         Say($"test sent: CC {cc} on channel {channel}, value 127 then 0");
         return true;
     }
 
-    /// <summary>Re-open the MIDI outputs after the port setting changed.</summary>
-    public void ReopenOutputs() => OpenOutputs();
+    /// <summary>
+    /// Re-open the MIDI outputs, after the port setting changed or after the watchdog
+    /// found the port gone. Everything sounding is released first: the handles are about
+    /// to be closed, and a Note Off sent afterwards would go nowhere.
+    /// Returns true when at least one output came up.
+    /// </summary>
+    public bool ReopenOutputs()
+    {
+        ReleaseAllNotes();
+        ReleaseForwardedNotes();
+        CloseOutputs();
+        return OpenOutputs();
+    }
 
     IntPtr OpenPin(uint id, bool write, Guid sub)
     {
@@ -320,6 +595,10 @@ public sealed class AutomapEngine : IDisposable
 
     public void Stop()
     {
+        // Before anything is torn down, while the outputs are still open.
+        ReleaseAllNotes();
+        ReleaseForwardedNotes();
+
         // The synth decides its own mode: both captures show F0 00 00 F7 travelling only
         // from the device, never towards it, so there is no command that can switch it
         // back to SYNTH. The most we can usefully do is say so on its display.
@@ -340,19 +619,41 @@ public sealed class AutomapEngine : IDisposable
         Connected = false;
         AutomapActive = false;
         _modeKnown = false;
+        // Both read threads sit in a blocking overlapped read that only returns when the
+        // synth sends something - which, on a quiet panel, is never. Closing the handle
+        // under a thread parked in the driver is how the old code got its hangs, so the
+        // reads are cancelled first and only then joined. With the read actually
+        // released, the joins are given room to finish rather than being raced.
+        if (_readPin != IntPtr.Zero) Ks.CancelIoEx(_readPin, IntPtr.Zero);
+        if (_midiPin != IntPtr.Zero) Ks.CancelIoEx(_midiPin, IntPtr.Zero);
+
         _paintWake.Set();
-        _reader?.Join(400);
-        _painter?.Join(400);
-        _midiReader?.Join(400);
+        _reader?.Join(1200);
+        _painter?.Join(1200);
+        _midiReader?.Join(1200);
         _reader = null;
         _painter = null;
         _midiReader = null;
-        foreach (var o in _outs) o.Dispose();
-        _outs.Clear();
-        if (_midiPin != IntPtr.Zero) { Ks.CloseHandle(_midiPin); _midiPin = IntPtr.Zero; }
-        if (_readPin != IntPtr.Zero) { Ks.CloseHandle(_readPin); _readPin = IntPtr.Zero; }
-        if (_writePin != IntPtr.Zero) { Ks.CloseHandle(_writePin); _writePin = IntPtr.Zero; }
+        CloseOutputs();
+        ClosePin(ref _midiPin);
+        ClosePin(ref _readPin);
+        ClosePin(ref _writePin);
         if (_filter != IntPtr.Zero) { Ks.CloseHandle(_filter); _filter = IntPtr.Zero; }
+    }
+
+    /// <summary>
+    /// Walk a pin back down the state machine before closing it - RUN to PAUSE to
+    /// ACQUIRE to STOP, the reverse of <see cref="OpenPin"/>. Dropping a running pin
+    /// leaves the filter holding the stream, which is what made the native software
+    /// find the device busy after we had exited.
+    /// </summary>
+    static void ClosePin(ref IntPtr pin)
+    {
+        if (pin == IntPtr.Zero) return;
+        foreach (uint st in new[] { Ks.KSSTATE_PAUSE, Ks.KSSTATE_ACQUIRE, Ks.KSSTATE_STOP })
+            Ks.SetPinState(pin, st, out _);
+        Ks.CloseHandle(pin);
+        pin = IntPtr.Zero;
     }
 
     public void Dispose() => Stop();
@@ -448,6 +749,7 @@ public sealed class AutomapEngine : IDisposable
             }
             LightMode();
             LightBanks();
+            RefreshPersistentButtonLeds(force: true);
             RefreshRings();
         })
         { IsBackground = true, Name = "led-blink" };
@@ -557,6 +859,7 @@ public sealed class AutomapEngine : IDisposable
                     if (lit[i]) SetLed(i, false);
                 LightMode();
                 LightBanks();
+                RefreshPersistentButtonLeds(force: true);
                 RefreshRings();
                 DrawLabels();
                 DrawAllValues();
@@ -666,6 +969,7 @@ public sealed class AutomapEngine : IDisposable
             {
                 LightMode();
                 LightBanks();
+                RefreshPersistentButtonLeds(force: true);
                 RefreshRings();
                 // Lamp-only probes must not touch the LCD: the previous display
                 // probe already showed SysEx paint is silent, and a redraw here
@@ -892,6 +1196,7 @@ public sealed class AutomapEngine : IDisposable
         _paintWake.Set();
         LightMode();
         LightBanks();
+        RefreshPersistentButtonLeds(force: true);
         RefreshRings();
 
         SettlePanel();
@@ -923,6 +1228,7 @@ public sealed class AutomapEngine : IDisposable
             if (_stop || !AutomapActive || _demoHold) return;
             LightMode();
             LightBanks();
+            RefreshPersistentButtonLeds(force: true);
             RefreshRings();
         })
         { IsBackground = true, Name = "panel-settle" };
@@ -952,6 +1258,9 @@ public sealed class AutomapEngine : IDisposable
         // lamp that is dark should mean the button does nothing.
         int clamped = Math.Clamp(index, 0, bank.Pages.Count - 1);
         if (clamped == PageIndex && index != PageIndex) return;
+        // A button held down on the way out keeps its note; the next page gives that
+        // button a different meaning, and nothing would ever release it.
+        ReleaseAllNotes();
         lock (_analogLock)
         {
             StashPageEncoders();
@@ -967,6 +1276,7 @@ public sealed class AutomapEngine : IDisposable
     public void SetBank(int index)
     {
         if (Config.Banks.Count == 0) return;
+        ReleaseAllNotes();
         lock (_analogLock)
         {
             StashPageEncoders();
@@ -1069,6 +1379,7 @@ public sealed class AutomapEngine : IDisposable
     {
         _repaintAll = true;
         _paintWake.Set();
+        RefreshPersistentButtonLeds();
         SelectionChanged?.Invoke(this, EventArgs.Empty);
     }
 
@@ -1272,6 +1583,7 @@ public sealed class AutomapEngine : IDisposable
                     // Mod wheel / pitch / aftertouch ride this port as well as (or
                     // instead of) the Automap analog stream. Same pickup path as B3.
                     OnPortMidiAnalog(status, d1, d2);
+                    ForwardKeyboardMidi(status, d1, d2);
                     PortMidi?.Invoke(this, new MidiInEventArgs
                     { Status = status, Data1 = d1, Data2 = d2 });
                 }
@@ -1325,6 +1637,10 @@ public sealed class AutomapEngine : IDisposable
             if (on && !_demoHold) LightMode();
             return;
         }
+
+        // Leaving Automap: the panel stops answering, so anything sounding has to be
+        // let go here while the outputs are still open.
+        if (!on) ReleaseAllNotes();
 
         ModeChanged?.Invoke(this, on);
 
@@ -1398,7 +1714,7 @@ public sealed class AutomapEngine : IDisposable
         var page = CurrentPage;
         if (page.Touch != null && page.Touch.TryGetValue(index.ToString(), out var m) && !m.Silent)
         {
-            SendSwitch(m, 1000 + index, touched);
+            SendSwitch(m, touched);
         }
 
         EncoderTouched?.Invoke(this, new TouchEventArgs { Index = index, Touched = touched });
@@ -1419,7 +1735,7 @@ public sealed class AutomapEngine : IDisposable
         var page = CurrentPage;
         int? sent = null;
         if (page.Buttons != null && page.Buttons.TryGetValue(code.ToString(), out var m) && !m.Silent)
-            sent = SendSwitch(m, code, pressed);
+            sent = SendSwitch(m, pressed);
 
         // Now that toggle and step have moved, the lamp can show where they landed.
         if (Config.EchoButtonLeds && AutomapActive
@@ -1455,8 +1771,8 @@ public sealed class AutomapEngine : IDisposable
         };
 
         byte ch = (byte)(Math.Clamp(m.Channel, 1, 16) - 1);
-        foreach (var o in _outs)
-            o.Send((byte)(0xB0 | ch), (byte)m.Number, (byte)Math.Clamp(v, 0, 127));
+        byte value = (byte)Math.Clamp(v, 0, 127);
+        SendToOutputs(o => o.Send((byte)(0xB0 | ch), (byte)m.Number, value));
     }
 
     /// <summary>
@@ -1464,6 +1780,38 @@ public sealed class AutomapEngine : IDisposable
     /// analog stream already reported the same control a moment ago, so a wheel that
     /// appears on both paths is not sent twice.
     /// </summary>
+    /// <summary>
+    /// Pass the keyboard through to the MIDI outputs: notes and polyphonic aftertouch,
+    /// nothing else. This is what makes the instrument playable in a DAW that is being
+    /// fed from us rather than from the system port - which is the whole point of taking
+    /// the private Port 1 pin instead of the public pair.
+    ///
+    /// Only Note On/Off is tracked, so a stop or a page change can silence what is
+    /// actually sounding. Wheels and pedals are left to <see cref="OnPortMidiAnalog"/>,
+    /// which puts them through the assignment and pickup path; sending them here as well
+    /// would duplicate every movement.
+    /// </summary>
+    void ForwardKeyboardMidi(byte status, byte d1, byte d2)
+    {
+        int kind = status & 0xF0;
+        if (kind == 0xA0)
+        {
+            // Per-note pressure is meaningless to hold - it stops arriving on its own.
+            SendToOutputs(o => o.Send(status, d1, d2));
+            return;
+        }
+        if (kind != 0x90 && kind != 0x80) return;
+
+        int packed = ((status & 0x0F) << 7) | d1;
+        bool on = kind == 0x90 && d2 != 0;      // Note On at velocity 0 is a Note Off
+        lock (_noteLock)
+        {
+            if (!SendToOutputs(o => o.Send(status, d1, d2))) return;
+            if (on) _forwardedNotes.Add(packed);
+            else _forwardedNotes.Remove(packed);
+        }
+    }
+
     void OnPortMidiAnalog(byte status, byte d1, byte d2)
     {
         int kind = status & 0xF0;
@@ -1486,10 +1834,23 @@ public sealed class AutomapEngine : IDisposable
     /// so it uses the same press/release path as a panel button — including toggle
     /// and keystroke — and only fires when the contact actually changes.
     /// </summary>
-    void OnAnalog(int code, int value)
+    /// <remarks>Internal so the regression checks can drive the real analog path.</remarks>
+    internal void OnAnalog(int code, int value)
     {
         bool pickup = false;
         int catchAt = -1;
+
+        // What to send is decided under _analogLock; the sending happens after it is
+        // released. Holding it across a send deadlocked the application: a send reaches
+        // the window - the log and the outgoing-MIDI view both take its own lock inside
+        // their handlers - while the UI thread takes _analogLock from the other side, to
+        // read the physical wheel position when it repaints a page. Two threads, two
+        // locks, opposite order. So _analogLock now covers only the state it exists to
+        // protect, and nothing that can call out of this class.
+        Mapping send = null;
+        int sendValue = 0;
+        bool? switchPressed = null;
+
         lock (_analogLock)
         {
             _analogRaw[code] = value;
@@ -1504,25 +1865,36 @@ public sealed class AutomapEngine : IDisposable
                 if (!_analogDown.TryGetValue(code, out bool was) || was != pressed)
                 {
                     _analogDown[code] = pressed;
-                    if (m != null && !m.Silent)
-                        SendSwitch(m, 2000 + code, pressed);
+                    if (m != null && !m.Silent) { send = m; switchPressed = pressed; }
                 }
             }
             else if (m != null && !m.Silent)
             {
                 int scaled = m.Scale(value);
-                if (m.Relative || !m.PickupEnabled)
+                // Short-circuit order matters: pickup is only consulted when it applies.
+                if (m.Relative || !m.PickupEnabled
+                    || !HoldOrCatchAnalog(code, m, value, scaled, out pickup))
                 {
-                    SendMapped(m, scaled);
-                    m.LastValue = scaled;
-                }
-                else if (!HoldOrCatchAnalog(code, m, value, scaled, out pickup))
-                {
-                    SendMapped(m, scaled);
+                    send = m;
+                    sendValue = scaled;
                     m.LastValue = scaled;
                 }
                 if (pickup && _analogPick.TryGetValue(code, out var pk))
                     catchAt = pk.CatchScaled;
+            }
+        }
+
+        if (send != null)
+        {
+            // Both read threads can reach here - the Automap stream and Port 1 both carry
+            // wheels - so the sends are serialised to keep one control's movements in
+            // order. This lock is deliberately not _analogLock: nothing outside this
+            // method ever takes it, and the UI never takes it at all, so it cannot be one
+            // side of a cycle the way _analogLock was.
+            lock (_analogSendLock)
+            {
+                if (switchPressed.HasValue) SendSwitch(send, switchPressed.Value);
+                else SendMapped(send, sendValue);
             }
         }
 
@@ -1531,9 +1903,11 @@ public sealed class AutomapEngine : IDisposable
     }
 
     /// <summary>
-    /// Soft takeover. Returns true when this reading was consumed (held or caught).
-    /// False means pickup is off and the caller should send. A missing pickup
-    /// record with no stored page value sends; with a stored value it holds.
+    /// Soft takeover. Returns true when this reading was consumed - the wheel is being
+    /// held until it matches the page value - and false when the caller should send.
+    /// A missing pickup record with no stored page value sends; with a stored value it
+    /// holds. The reading that finally catches the page value also returns false, so the
+    /// send belongs to the caller and can happen outside the lock.
     /// </summary>
     bool HoldOrCatchAnalog(int code, Mapping m, int value, int scaled, out bool pickup)
     {
@@ -1577,11 +1951,10 @@ public sealed class AutomapEngine : IDisposable
             return true;
         }
 
+        // Caught. Disarm and let the caller send it.
         pk.Armed = false;
         _analogPick[code] = pk;
-        SendMapped(m, scaled);
-        m.LastValue = scaled;
-        return true;
+        return false;
     }
 
     /// <summary>
@@ -1603,6 +1976,7 @@ public sealed class AutomapEngine : IDisposable
         var page = CurrentPage;
         if (page.Buttons == null || !page.Buttons.TryGetValue(code.ToString(), out var m))
         {
+            lock (_switchLock) _persistentLedCodes.Remove(code);
             SetLed(code, pressed);
             return;
         }
@@ -1610,25 +1984,129 @@ public sealed class AutomapEngine : IDisposable
         switch (m.Send == "key" || m.Send == "transport" ? "flash" : m.Mode)
         {
             case "flash":
+                lock (_switchLock) _persistentLedCodes.Remove(code);
                 if (pressed) BlinkLed(code, 1, 90, 0);
                 break;
 
             case "toggle":
-                if (pressed && _toggles.TryGetValue(code, out bool on)) SetLed(code, on);
+                {
+                    // Latch on the press, and set the lamp unconditionally: reading the
+                    // state only when a value happened to be stored left a switch that
+                    // had just been turned off still lit.
+                    if (!pressed) break;
+                    bool on;
+                    lock (_switchLock)
+                    {
+                        _toggles.TryGetValue(m, out on);
+                        if (on) _persistentLedCodes.Add(code);
+                        else _persistentLedCodes.Remove(code);
+                    }
+                    SetLed(code, on);
+                }
                 break;
 
             case "step":
-                if (pressed && _steps.TryGetValue(code, out int at)) SetLed(code, at > 0);
+                {
+                    if (!pressed) break;
+                    int at;
+                    lock (_switchLock)
+                    {
+                        _steps.TryGetValue(m, out at);
+                        if (at > 0) _persistentLedCodes.Add(code);
+                        else _persistentLedCodes.Remove(code);
+                    }
+                    SetLed(code, at > 0);
+                }
                 break;
 
             default:
+                lock (_switchLock) _persistentLedCodes.Remove(code);
                 SetLed(code, pressed);
                 break;
         }
     }
 
-    /// <summary>Returns the value sent, or null when nothing was sent.</summary>
-    int? SendSwitch(Mapping m, int id, bool pressed)
+    /// <summary>
+    /// Where a latched switch stands, for the UI to draw on the button tile. False for
+    /// anything that has no standing state - momentary, flash, keystroke, transport,
+    /// silent - in which case the outputs are meaningless.
+    /// </summary>
+    public bool TryGetPersistentSwitchState(Mapping mapping, out bool active, out int value)
+    {
+        lock (_switchLock) return TryGetPersistentSwitchStateUnlocked(mapping, out active, out value);
+    }
+
+    bool TryGetPersistentSwitchStateUnlocked(Mapping mapping, out bool active, out int value)
+    {
+        active = false;
+        value = 0;
+        if (mapping == null || mapping.Silent) return false;
+        if (mapping.Send is "key" or "transport") return false;
+
+        switch (mapping.Mode)
+        {
+            case "toggle":
+                _toggles.TryGetValue(mapping, out active);
+                value = active ? mapping.To : mapping.From;
+                return true;
+
+            case "step":
+                _steps.TryGetValue(mapping, out int at);
+                active = at > 0;
+                value = mapping.StepValue(at);
+                return true;
+
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// Bring the panel lamps in line with the latched switches on this page.
+    ///
+    /// A page change is the reason this exists: the lamps still show where the old
+    /// page's toggles stood, and nothing presses those buttons again to correct them.
+    /// The set of codes we are holding lit is tracked so the difference can be written
+    /// rather than the whole panel - lighting everything at once sags the rail.
+    ///
+    /// <paramref name="force"/> writes the lit ones even if they were already believed
+    /// lit, for the moments when the synth has just blanked the panel itself.
+    /// </summary>
+    public void RefreshPersistentButtonLeds(bool force = false)
+    {
+        if (!AutomapActive || _demoHold) return;
+
+        int[] toDark, toLight;
+        lock (_switchLock)
+        {
+            var wanted = new HashSet<int>();
+            if (Config.EchoButtonLeds && CurrentPage.Buttons != null)
+            {
+                foreach (var (key, m) in CurrentPage.Buttons)
+                {
+                    if (!int.TryParse(key, out int code)) continue;
+                    if (!Config.HasOwnLed(code) || Config.IsReserved(code)) continue;
+                    if (TryGetPersistentSwitchStateUnlocked(m, out bool on, out _) && on)
+                        wanted.Add(code);
+                }
+            }
+            toDark = _persistentLedCodes.Where(c => !wanted.Contains(c)).ToArray();
+            toLight = wanted.Where(c => force || !_persistentLedCodes.Contains(c)).ToArray();
+            _persistentLedCodes.Clear();
+            foreach (int c in wanted) _persistentLedCodes.Add(c);
+        }
+
+        // Outside the lock: each SetLed is a USB write.
+        foreach (int c in toDark) SetLed(c, false);
+        foreach (int c in toLight) SetLed(c, true);
+    }
+
+    /// <summary>
+    /// Act on a switch: move its latch, send what that lands on, and return the value
+    /// sent - or null when nothing was sent. Internal rather than private so the
+    /// regression checks can drive the real path instead of a stand-in.
+    /// </summary>
+    internal int? SendSwitch(Mapping m, bool pressed)
     {
         // A keystroke happens once, on the press. Repeating it on release would type
         // everything twice.
@@ -1638,7 +2116,11 @@ public sealed class AutomapEngine : IDisposable
             if (!pressed) return null;
             var cmd = Transport.Find(m.TransportCommand);
             if (cmd == null) { Say("no transport command chosen"); return null; }
-            foreach (var o in _outs) o.SendRaw(cmd.Bytes);
+            if (!SendToOutputs(o => o.SendRaw(cmd.Bytes)))
+            {
+                Say("transport: no MIDI output open");
+                return null;
+            }
             Say("transport: " + cmd.Label + " · " + MidiNames.SysEx(cmd.Bytes));
             return 1;
         }
@@ -1652,24 +2134,38 @@ public sealed class AutomapEngine : IDisposable
             return ok ? 1 : null;
         }
 
+        // Whether a note mapping should sound or stop. Taken from the switch rather
+        // than from the value: a toggle whose upper value happens to be zero still
+        // means "on", and momentary with Press below Release still means "pressed".
+        bool? noteOn = null;
+
         int value;
         switch (m.Mode)
         {
             case "toggle":
                 // Latch on the way down only; the release is ignored.
                 if (!pressed) return null;
-                _toggles.TryGetValue(id, out bool on);
-                _toggles[id] = !on;
+                bool on;
+                lock (_switchLock)
+                {
+                    _toggles.TryGetValue(m, out on);
+                    _toggles[m] = !on;
+                }
                 value = !on ? m.To : m.From;
+                noteOn = !on;
                 break;
 
             case "step":
                 // Advance one position and wrap. Positions are spread across the range,
                 // so each press lands on a setting rather than nudging by one.
                 if (!pressed) return null;
-                _steps.TryGetValue(id, out int at);
-                at = (at + 1) % Math.Max(1, m.Points);
-                _steps[id] = at;
+                int at;
+                lock (_switchLock)
+                {
+                    _steps.TryGetValue(m, out at);
+                    at = (at + 1) % Math.Max(1, m.Points);
+                    _steps[m] = at;
+                }
                 value = m.StepValue(at);
                 break;
 
@@ -1677,18 +2173,20 @@ public sealed class AutomapEngine : IDisposable
                 // The plain switch: full range, ignoring the Release/Press fields. Use
                 // Momentary when those values matter.
                 value = pressed ? 127 : 0;
+                noteOn = pressed;
                 break;
 
             default:   // momentary
                 value = pressed ? m.To : m.From;
+                noteOn = pressed;
                 break;
         }
 
-        SendMapped(m, value);
+        SendMapped(m, value, noteOn);
         return value;
     }
 
-    void SendMapped(Mapping m, int value)
+    void SendMapped(Mapping m, int value, bool? noteOn = null)
     {
         byte ch = (byte)(Math.Clamp(m.Channel, 1, 16) - 1);
         value = Math.Clamp(value, 0, 127);
@@ -1702,26 +2200,24 @@ public sealed class AutomapEngine : IDisposable
                 break;
 
             case "note":
-                foreach (var o in _outs)
-                    o.Send((byte)((value > 0 ? 0x90 : 0x80) | ch), (byte)m.Number, (byte)value);
+                // Tracked, so the note can be released on a page change or a stop.
+                SendTrackedNote(m, ch, (byte)m.Number, (byte)value, noteOn ?? value > 0);
                 break;
 
             case "pitchbend":
                 // Pitch bend is 14-bit; spread our 0..127 across the full range so the
                 // whole span of the wheel is reachable from one knob.
                 int wide = value * 16383 / 127;
-                foreach (var o in _outs)
-                    o.Send((byte)(0xE0 | ch), (byte)(wide & 0x7F), (byte)((wide >> 7) & 0x7F));
+                SendToOutputs(o =>
+                    o.Send((byte)(0xE0 | ch), (byte)(wide & 0x7F), (byte)((wide >> 7) & 0x7F)));
                 break;
 
             case "aftertouch":
-                foreach (var o in _outs)
-                    o.Send((byte)(0xD0 | ch), (byte)value, 0);
+                SendToOutputs(o => o.Send((byte)(0xD0 | ch), (byte)value, 0));
                 break;
 
             case "program":
-                foreach (var o in _outs)
-                    o.Send((byte)(0xC0 | ch), (byte)value, 0);
+                SendToOutputs(o => o.Send((byte)(0xC0 | ch), (byte)value, 0));
                 break;
 
             case "nrpn":
@@ -1736,16 +2232,14 @@ public sealed class AutomapEngine : IDisposable
                 {
                     int cc = Math.Clamp(m.Number, 0, 31);
                     int w = value * 16383 / 127;
-                    foreach (var o in _outs)
-                    {
-                        o.Send((byte)(0xB0 | ch), (byte)cc, (byte)((w >> 7) & 0x7F));
-                        o.Send((byte)(0xB0 | ch), (byte)(cc + 32), (byte)(w & 0x7F));
-                    }
+                    SendToOutputs(o =>
+                        o.Send((byte)(0xB0 | ch), (byte)cc, (byte)((w >> 7) & 0x7F))
+                        & o.Send((byte)(0xB0 | ch), (byte)(cc + 32), (byte)(w & 0x7F)));
                 }
                 break;
 
             default:
-                foreach (var o in _outs) o.Send((byte)(0xB0 | ch), (byte)m.Number, (byte)value);
+                SendToOutputs(o => o.Send((byte)(0xB0 | ch), (byte)m.Number, (byte)value));
                 break;
         }
     }
@@ -1762,13 +2256,13 @@ public sealed class AutomapEngine : IDisposable
         byte pLsb = (byte)(param & 0x7F);
         byte dMsb = (byte)((data >> 7) & 0x7F);
         byte dLsb = (byte)(data & 0x7F);
-        foreach (var o in _outs)
-        {
-            o.Send((byte)(0xB0 | ch), paramMsbCc, pMsb);
-            o.Send((byte)(0xB0 | ch), paramLsbCc, pLsb);
-            o.Send((byte)(0xB0 | ch), 6, dMsb);
-            o.Send((byte)(0xB0 | ch), 38, dLsb);
-        }
+        // All four or nothing: a parameter selected without its data entry, or an MSB
+        // without its LSB, is worse than a message that never went.
+        SendToOutputs(o =>
+            o.Send((byte)(0xB0 | ch), paramMsbCc, pMsb)
+            & o.Send((byte)(0xB0 | ch), paramLsbCc, pLsb)
+            & o.Send((byte)(0xB0 | ch), 6, dMsb)
+            & o.Send((byte)(0xB0 | ch), 38, dLsb));
     }
 
     // ---- device discovery --------------------------------------------------

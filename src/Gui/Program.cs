@@ -49,7 +49,6 @@ internal static class Program
     public static IEnumerable<string> ProbeFilePaths()
     {
         yield return Path.Combine(AppContext.BaseDirectory, "probe.txt");
-        yield return Path.Combine(@"C:\Yandex.Disk\DIY\UltraNova\UltraNovaCtl", "probe.txt");
         yield return Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
             "UltraNovaCtl", "probe.txt");
@@ -165,6 +164,7 @@ internal static class Program
 
     static void AskExistingToShow()
     {
+        if (!OperatingSystem.IsWindows()) return;
         for (int i = 0; i < 20; i++)
         {
             try

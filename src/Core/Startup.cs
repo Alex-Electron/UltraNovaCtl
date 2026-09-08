@@ -32,7 +32,7 @@ public static class Startup
     /// <summary>True when the Run key points at this copy of the program.</summary>
     public static bool IsEnabled()
     {
-        if (!IsSupported) return false;
+        if (!OperatingSystem.IsWindows()) return false;
         try
         {
             using var key = Registry.CurrentUser.OpenSubKey(RunKey);
@@ -47,7 +47,7 @@ public static class Startup
     /// </summary>
     public static string RegisteredCommand()
     {
-        if (!IsSupported) return null;
+        if (!OperatingSystem.IsWindows()) return null;
         try
         {
             using var key = Registry.CurrentUser.OpenSubKey(RunKey);
@@ -60,7 +60,7 @@ public static class Startup
     public static bool Set(bool enabled, out string error)
     {
         error = null;
-        if (!IsSupported) { error = "only Windows has a Run key"; return false; }
+        if (!OperatingSystem.IsWindows()) { error = "only Windows has a Run key"; return false; }
 
         try
         {

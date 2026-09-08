@@ -96,7 +96,7 @@ internal static class Automap
         return pin;
     }
 
-    public static int Run(string filterPath, string message, int seconds, string outPort = null)
+    public static int Run(string filterPath, string message, int seconds, string? outPort = null)
     {
         if (!string.IsNullOrEmpty(outPort))
         {

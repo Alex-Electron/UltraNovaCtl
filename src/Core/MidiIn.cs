@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Diagnostics;
 
 namespace UltraNovaCtl.Core;
 
@@ -64,6 +65,8 @@ public sealed class MidiIn : IDisposable
     const uint CALLBACK_FUNCTION = 0x30000;
     const int SysexBufSize = 4096;
     const int SysexBufCount = 2;
+    const uint NoError = 0;
+    const uint MidiStillPlaying = 65;
 
     [DllImport("winmm.dll")] static extern uint midiInGetNumDevs();
     [DllImport("winmm.dll", CharSet = CharSet.Unicode)]
@@ -96,6 +99,8 @@ public sealed class MidiIn : IDisposable
     MidiInProc _proc;                 // kept alive: the callback outlives the open call
     IntPtr[] _sxData;
     IntPtr[] _sxHdr;
+    bool[] _sxPrepared;
+    volatile bool _closing;
 
     public string PortName { get; private set; } = "";
     public bool IsOpen => _handle != IntPtr.Zero;
@@ -119,6 +124,7 @@ public sealed class MidiIn : IDisposable
     public bool Open(string nameFragment, out string error)
     {
         Close();
+        _closing = false;
         error = null;
         uint n = midiInGetNumDevs();
         for (uint i = 0; i < n; i++)
@@ -152,20 +158,32 @@ public sealed class MidiIn : IDisposable
         ReleaseSysexBuffers();
         _sxData = new IntPtr[SysexBufCount];
         _sxHdr = new IntPtr[SysexBufCount];
+        _sxPrepared = new bool[SysexBufCount];
         uint size = (uint)Marshal.SizeOf<MIDIHDR>();
-        for (int i = 0; i < SysexBufCount; i++)
+        try
         {
-            _sxData[i] = Marshal.AllocHGlobal(SysexBufSize);
-            _sxHdr[i] = Marshal.AllocHGlobal((int)size);
-            var hdr = new MIDIHDR
+            for (int i = 0; i < SysexBufCount; i++)
             {
-                lpData = _sxData[i],
-                dwBufferLength = SysexBufSize,
-                dwReserved = new IntPtr[8],
-            };
-            Marshal.StructureToPtr(hdr, _sxHdr[i], false);
-            if (midiInPrepareHeader(_handle, _sxHdr[i], size) == 0)
-                midiInAddBuffer(_handle, _sxHdr[i], size);
+                _sxData[i] = Marshal.AllocHGlobal(SysexBufSize);
+                _sxHdr[i] = Marshal.AllocHGlobal((int)size);
+                var hdr = new MIDIHDR
+                {
+                    lpData = _sxData[i],
+                    dwBufferLength = SysexBufSize,
+                    dwReserved = new IntPtr[8],
+                };
+                Marshal.StructureToPtr(hdr, _sxHdr[i], false);
+                if (midiInPrepareHeader(_handle, _sxHdr[i], size) == NoError)
+                {
+                    _sxPrepared[i] = true;
+                    midiInAddBuffer(_handle, _sxHdr[i], size);
+                }
+            }
+        }
+        catch
+        {
+            ReleaseSysexBuffers();
+            throw;
         }
     }
 
@@ -175,15 +193,35 @@ public sealed class MidiIn : IDisposable
         uint size = (uint)Marshal.SizeOf<MIDIHDR>();
         for (int i = 0; i < _sxHdr.Length; i++)
         {
+            bool safeToFree = _sxHdr[i] == IntPtr.Zero;
             if (_sxHdr[i] != IntPtr.Zero)
             {
-                if (_handle != IntPtr.Zero) midiInUnprepareHeader(_handle, _sxHdr[i], size);
-                Marshal.FreeHGlobal(_sxHdr[i]);
+                safeToFree = _sxPrepared == null || !_sxPrepared[i] || _handle == IntPtr.Zero;
+                if (!safeToFree)
+                    safeToFree = UnprepareWhenReady(_sxHdr[i], size, 1000) == NoError;
+                if (safeToFree) Marshal.FreeHGlobal(_sxHdr[i]);
+                // If a broken driver still owns the header, deliberately retain both
+                // allocations until process exit instead of risking a callback into freed memory.
             }
-            if (_sxData != null && _sxData[i] != IntPtr.Zero) Marshal.FreeHGlobal(_sxData[i]);
+            if (safeToFree && _sxData != null && _sxData[i] != IntPtr.Zero)
+                Marshal.FreeHGlobal(_sxData[i]);
         }
         _sxHdr = null;
         _sxData = null;
+        _sxPrepared = null;
+    }
+
+    uint UnprepareWhenReady(IntPtr header, uint size, int timeoutMs)
+    {
+        var timer = Stopwatch.StartNew();
+        uint result;
+        do
+        {
+            result = midiInUnprepareHeader(_handle, header, size);
+            if (result != MidiStillPlaying) return result;
+            Thread.Sleep(1);
+        } while (timer.ElapsedMilliseconds < timeoutMs);
+        return result;
     }
 
     void Callback(IntPtr h, uint msg, IntPtr instance, IntPtr p1, IntPtr p2)
@@ -199,7 +237,7 @@ public sealed class MidiIn : IDisposable
                 Marshal.Copy(hdr.lpData, data, 0, n);
                 Received?.Invoke(this, new MidiInEventArgs { Status = 0xF0, SysEx = data });
             }
-            if (_handle != IntPtr.Zero)
+            if (!_closing && _handle != IntPtr.Zero)
                 midiInAddBuffer(_handle, p1, (uint)Marshal.SizeOf<MIDIHDR>());
             return;
         }
@@ -221,6 +259,7 @@ public sealed class MidiIn : IDisposable
     public void Close()
     {
         if (_handle == IntPtr.Zero) return;
+        _closing = true;
         midiInStop(_handle);
         midiInReset(_handle);
         ReleaseSysexBuffers();

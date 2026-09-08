@@ -19,6 +19,9 @@ jobs:
       - name: Build
         run: dotnet build UltraNovaCtl.sln -c Release
 
+      - name: Regression checks
+        run: dotnet run --project tests/CoreRegressionTests -c Release --no-build
+
       - name: Publish a self-contained executable
         run: >
           dotnet publish src/Gui/UltraNovaCtl.Gui.csproj -c Release -r win-x64
