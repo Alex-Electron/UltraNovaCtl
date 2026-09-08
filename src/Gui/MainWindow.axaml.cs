@@ -901,6 +901,14 @@ public partial class MainWindow : Window
     /// </summary>
     static readonly int[] EncoderDisplayOrder = { 9, 0, 1, 2, 3, 4, 5, 6, 7, 8 };
 
+    /// <summary>The divider between two encoder groups. One place, so both look alike.</summary>
+    static Border EncoderRule() => new()
+    {
+        Width = 1,
+        Margin = new Thickness(6, 6, 6, 6),
+        Background = new SolidColorBrush(Color.Parse("#24242E")),
+    };
+
     void BuildTiles()
     {
         var page = _engine.CurrentPage;
@@ -914,16 +922,10 @@ public partial class MainWindow : Window
             tile.Root.PointerPressed += (_, _) => Select(tile);
             _encoders[i] = tile;
             _encoderRow.Children.Add(tile.Root);
-            // Three groups, spaced as they are on the instrument: the patch dial stands
+            // Three groups, divided as they are on the instrument: the patch dial stands
             // alone on the left, the eight under the display are a tight row, and the
-            // filter knob stands alone on the right.
-            if (i == 9) _encoderRow.Children.Add(new Border { Width = 10 });
-            if (i == 7)
-                _encoderRow.Children.Add(new Border
-                {
-                    Width = 1, Margin = new Thickness(6, 6, 6, 6),
-                    Background = new SolidColorBrush(Color.Parse("#24242E")),
-                });
+            // filter knob stands alone on the right. Same rule on both boundaries.
+            if (i == 9 || i == 7) _encoderRow.Children.Add(EncoderRule());
         }
 
         _analogWrap.Children.Clear();
