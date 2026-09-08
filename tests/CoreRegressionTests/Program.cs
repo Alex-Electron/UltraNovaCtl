@@ -303,10 +303,14 @@ static class Program
         // a channel-mode message on a channel the instrument ignores costs nothing.
         void SetLocal(bool on)
         {
-            byte v = (byte)(on ? 127 : 0);
+            // Not the standard 0/127. Novation's own editor uses vendor values on the
+            // standard Local Control controller: 33 turns Local off, 99 turns it back on
+            // (UltraNova Editor 64.dll, rva 0x1AF0 and 0x1A70). Sending 0 and 127 moved
+            // nothing on this instrument.
+            byte v = (byte)(on ? 99 : 33);
             output.Send(0xB0, 122, v);
             output.Send(0xB1, 122, v);
-            Thread.Sleep(300);
+            Thread.Sleep(400);
         }
 
         byte[] before = null;
