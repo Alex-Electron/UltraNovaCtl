@@ -747,6 +747,38 @@ public sealed class AutomapEngine : IDisposable
     public bool RequestStoredPatch(int bank, int program)
         => SendToInstrument(PatchProtocol.RequestStored(bank, program));
 
+    /// <summary>
+    /// Send a controller change to the instrument, the way a parameter edit travels. The
+    /// instrument reports its own panel edits as controllers on channel 2 over this same
+    /// pair, so that is the channel an editor answers on.
+    /// </summary>
+    public bool SendControlChange(int channel, int controller, int value)
+    {
+        if ((uint)(channel - 1) > 15) throw new ArgumentOutOfRangeException(nameof(channel));
+        if ((uint)controller > 127) throw new ArgumentOutOfRangeException(nameof(controller));
+        if ((uint)value > 127) throw new ArgumentOutOfRangeException(nameof(value));
+        return SendToInstrument(new byte[]
+            { (byte)(0xB0 | (channel - 1)), (byte)controller, (byte)value });
+    }
+
+    /// <summary>
+    /// Send a parameter edit as an NRPN: parameter number in two halves, then the value.
+    /// Used for the parameters that have no plain controller of their own.
+    /// </summary>
+    public bool SendNrpn(int channel, int msb, int lsb, int value)
+    {
+        if ((uint)(channel - 1) > 15) throw new ArgumentOutOfRangeException(nameof(channel));
+        if ((uint)msb > 127 || (uint)lsb > 127 || (uint)value > 127)
+            throw new ArgumentOutOfRangeException(nameof(value));
+        byte status = (byte)(0xB0 | (channel - 1));
+        return SendToInstrument(new byte[]
+        {
+            status, 99, (byte)msb,
+            status, 98, (byte)lsb,
+            status, 6, (byte)value,
+        });
+    }
+
     /// <summary>Write raw bytes to the instrument's private input.</summary>
     bool SendToInstrument(byte[] message)
     {

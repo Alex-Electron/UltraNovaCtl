@@ -15,6 +15,7 @@ static class Program
         if (args.Length >= 1 && args[0] == "--locks") return LockProbe();
         if (args.Length >= 3 && args[0] == "--watch") return WatchEdits(args);
         if (args.Length >= 1 && args[0] == "--editor") return EditorSession(args);
+        if (args.Length >= 1 && args[0] == "--writetest") return WriteTest(args);
 
         (string name, Action run)[] tests =
         {
@@ -445,6 +446,89 @@ static class Program
         Console.WriteLine($"\nИТОГО: статусов {statuses}, патчей {dumps}, "
             + $"смен патча {selections}, правок {parameters}");
         return statuses > 0 && dumps > 0 ? 0 : 3;
+    }
+
+
+    /// <summary>
+    /// Prove the write half of the editor transport against the instrument, and put back
+    /// what it changed.
+    ///
+    /// Reads the edit buffer, notes Filter1 Frequency at table offset 79, sends a
+    /// different value as a controller, re-reads and checks the instrument actually
+    /// moved, then writes the original back and re-reads again to confirm the sound is
+    /// where it started. Only the volatile edit buffer is touched; nothing is stored.
+    ///
+    /// The channel is not assumed. The instrument reports its own edits on channel 2 over
+    /// this pair, so channel 2 is tried first and channel 1 after it, and whichever moves
+    /// the value is reported. Guessing would have been quicker and worth nothing.
+    /// </summary>
+    static int WriteTest(string[] args)
+    {
+        const int offset = 79;            // Filter1 Frequency
+        const int controller = 74;
+
+        using var engine = new AutomapEngine();
+        engine.Log += (_, m) => Console.WriteLine("  " + m);
+
+        byte[]? latest = null;
+        var arrived = new ManualResetEventSlim(false);
+        engine.PatchReceived += (_, e) => { latest = e.Data; arrived.Set(); };
+
+        byte[]? Fetch(string what)
+        {
+            arrived.Reset();
+            if (!engine.RequestPatch()) { Console.WriteLine("запрос не ушёл"); return null; }
+            if (!arrived.Wait(3000)) { Console.WriteLine($"{what}: дампа не дождался"); return null; }
+            return latest;
+        }
+
+        if (!engine.Start()) { Console.WriteLine("движок не стартовал"); return 1; }
+        try
+        {
+            if (!engine.AttachEditor()) { Console.WriteLine("редактор не подключился"); return 2; }
+
+            var before = Fetch("исходный");
+            if (before == null) return 3;
+            PatchProtocol.TryValue(before, offset, out byte original);
+            Console.WriteLine($"патч '{PatchProtocol.NameOf(before)}', "
+                + $"Filter1 Frequency = {original} (смещение {offset}, байт {PatchProtocol.MessageIndex(offset)})");
+
+            byte wanted = (byte)(original > 63 ? original - 30 : original + 30);
+            int worked = 0;
+            foreach (int channel in new[] { 2, 1 })
+            {
+                Console.WriteLine($"\nпробую канал {channel}: CC {controller} = {wanted}");
+                engine.SendControlChange(channel, controller, wanted);
+                Thread.Sleep(250);
+                var after = Fetch("после записи");
+                if (after == null) return 4;
+                PatchProtocol.TryValue(after, offset, out byte now);
+                Console.WriteLine($"  прибор показывает {now}");
+                if (now == wanted) { worked = channel; break; }
+            }
+
+            if (worked == 0)
+            {
+                Console.WriteLine("\nни один канал не сдвинул параметр - запись не подтверждена");
+                return 5;
+            }
+            Console.WriteLine($"\nЗАПИСЬ РАБОТАЕТ: канал {worked}, {original} -> {wanted} и прибор это подтвердил");
+
+            engine.SendControlChange(worked, controller, original);
+            Thread.Sleep(250);
+            var restored = Fetch("после возврата");
+            if (restored == null) return 6;
+            PatchProtocol.TryValue(restored, offset, out byte back);
+            Console.WriteLine(back == original
+                ? $"вернул как было: {back}"
+                : $"ВНИМАНИЕ: не вернулось, сейчас {back}, было {original}");
+            return back == original ? 0 : 7;
+        }
+        finally
+        {
+            engine.DetachEditor();
+            engine.Stop();
+        }
     }
 
     static int LockProbe()

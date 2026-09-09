@@ -13,6 +13,17 @@
   pair answers requests, announces patch selection, and streams live parameter edits
   regardless of that setting, while the public pair stays free for a DAW. The editor
   will therefore never ask anyone to change a global setting.
+- Both directions of that transport are now proven on the instrument. Reading: a
+  session parsed the status reply as firmware 2.0.00 with Local on, parsed the edit
+  buffer as a named patch, took 363 live parameter edits as the filter knob swept, and
+  reported a panel patch change as bank 2 slot 51. Writing: a self-restoring check read
+  Filter1 Frequency, sent a different value on channel 2, confirmed the change by
+  re-requesting the dump rather than trusting an echo, and put the original back.
+- Two questions that were recorded as open are now settled, one of them against my own
+  guess. Live telemetry needs no attach at all - the edits arrived before the attach was
+  even sent, because the reader on pin 6 starts with the engine. And an Automap session
+  does not suppress them, which is what I had suspected when three empty windows in a row
+  turned out to mean only that nobody was turning a knob.
 - New engine events for what arrives that way: a whole patch, a status reply carrying
   firmware and Local Control, a parameter edited elsewhere, and a patch selected on the
   panel. Patch selection is sent as two data bytes against one NRPN, bank then slot, and
