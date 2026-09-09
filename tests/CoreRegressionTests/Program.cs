@@ -41,6 +41,7 @@ static class Program
             ("factory-routed wheels are held back with the relay off", FactoryRoutedWheelsAreHeldBackWithTheRelayOff),
             ("latched lamps stay within the rail budget", LatchedLampsStayWithinTheRailBudget),
             ("activity lamps split hands from instrument", ActivityLampsSplitHandsFromInstrument),
+            ("a touch pulse is a report, not a hand", ATouchPulseIsAReportNotAHand),
             ("releasing notes without a connection is harmless", ReleaseWithoutConnectionIsHarmless),
             ("reopening outputs reports failure instead of throwing", ReopenOutputsReportsFailure),
             ("an unopened output is not usable", UnopenedOutputIsNotUsable),
@@ -1135,6 +1136,36 @@ static class Program
         Equal(true, act.Lit(K), "lit right after a touch");
         Equal(1L, act.Count(K), "counted once");
         Equal(false, act.Lit(S), "the other lamp is unaffected");
+    }
+
+    /// <summary>
+    /// In AUTOMAP mode the instrument reports a parameter edited from elsewhere - the
+    /// native editor over its own transport - as a touch-on/touch-off pair in one packet
+    /// on the encoder the parameter sits under. That must not fire the encoder's Touch
+    /// assignment, or every edit in the plug-in reaches the DAW as a press. A hand, which
+    /// holds for longer than the hold time, still does.
+    /// </summary>
+    static void ATouchPulseIsAReportNotAHand()
+    {
+        using var engine = new AutomapEngine();
+        engine.Config.OutputPort = "";
+        var page = engine.CurrentPage;
+        var touch = new Mapping { Send = "cc", Channel = 1, Number = 90, Mode = "momentary", From = 0, To = 127 };
+        page.Touch["2"] = touch;
+
+        // The instrument's report: on and off with nothing in between.
+        engine.OnTouch(2, true);
+        engine.OnTouch(2, false);
+        Thread.Sleep(AutomapEngine.TouchHoldMs * 3);
+        True(engine.HeldRouteOf(touch) == null, "a pulse asserted nothing");
+        Equal(0, engine.ReleaseHeldSwitches(), "and left nothing to release");
+
+        // A hand: touched, held past the hold time, then let go.
+        engine.OnTouch(2, true);
+        Thread.Sleep(AutomapEngine.TouchHoldMs * 3);
+        True(engine.HeldRouteOf(touch) != null, "a held touch is a press");
+        engine.OnTouch(2, false);
+        True(engine.HeldRouteOf(touch) == null, "and letting go releases it");
     }
 
     static void ReleaseWithoutConnectionIsHarmless()

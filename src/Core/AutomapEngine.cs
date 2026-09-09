@@ -146,6 +146,20 @@ public sealed class AutomapEngine : IDisposable
 
     volatile bool _nativeEditorOpen;
     long _nativeEditorCheckedMs;
+
+    /// <summary>
+    /// How long an encoder has to stay touched before the touch counts as a hand. In
+    /// AUTOMAP mode the instrument reports a parameter edited from elsewhere - the native
+    /// editor over its private transport - as a touch-on/touch-off pair on the encoder
+    /// that parameter sits under, both in one packet. A hand holds for tens to hundreds of
+    /// milliseconds; nothing human lets go in under thirty. So a Touch assignment fires
+    /// only once the touch has lasted this long, and a shorter pulse is treated as what it
+    /// is: the instrument telling us something was edited, which the ring shows anyway.
+    /// </summary>
+    public const int TouchHoldMs = 30;
+
+    readonly Timer[] _touchPending = new Timer[EncoderCount];
+    readonly bool[] _touchAsserted = new bool[EncoderCount];
     int _lastDroppedLamps = -1;
 
     readonly Dictionary<int, bool> _analogDown = new();
@@ -680,6 +694,7 @@ public sealed class AutomapEngine : IDisposable
         _painter = null;
         _midiReader = null;
         CloseOutputs();
+        foreach (var t in _touchPending) t?.Change(Timeout.Infinite, Timeout.Infinite);
         ClosePin(ref _midiPin);
         ClosePin(ref _readPin);
         ClosePin(ref _writePin);
@@ -1758,20 +1773,60 @@ public sealed class AutomapEngine : IDisposable
         { Index = index, Delta = delta, Value = _values[index] });
     }
 
-    void OnTouch(int index, bool touched)
+    /// <remarks>Internal so the regression checks can drive the real touch path.</remarks>
+    internal void OnTouch(int index, bool touched)
     {
         if (index < 0 || index >= EncoderCount) return;
         _touched[index] = touched;
         DrawValue(index);
-        UpdateRing(index);
+        UpdateRing(index);            // the ring follows every touch, hand or report
 
         var page = CurrentPage;
-        if (page.Touch != null && page.Touch.TryGetValue(index.ToString(), out var m) && !m.Silent)
+        Mapping m = null;
+        if (page.Touch != null) page.Touch.TryGetValue(index.ToString(), out m);
+        if (m != null && !m.Silent)
         {
-            SendSwitch(m, touched);
+            if (touched)
+            {
+                // Not yet. Arm the hold; the press goes out only if the touch outlives it.
+                lock (_switchLock)
+                {
+                    _touchPending[index] ??= new Timer(TouchHeld, index, Timeout.Infinite, Timeout.Infinite);
+                    _touchPending[index].Change(TouchHoldMs, Timeout.Infinite);
+                }
+            }
+            else
+            {
+                bool wasAsserted;
+                lock (_switchLock)
+                {
+                    _touchPending[index]?.Change(Timeout.Infinite, Timeout.Infinite);
+                    wasAsserted = _touchAsserted[index];
+                    _touchAsserted[index] = false;
+                }
+                // Release only what was pressed. A pulse that never made the hold sent
+                // nothing, so it has nothing to release - that is the whole point.
+                if (wasAsserted) SendSwitch(m, false);
+            }
         }
 
         EncoderTouched?.Invoke(this, new TouchEventArgs { Index = index, Touched = touched });
+    }
+
+    /// <summary>The hold ran out with the encoder still touched: a hand, so press.</summary>
+    void TouchHeld(object state)
+    {
+        int index = (int)state;
+        Mapping m = null;
+        lock (_switchLock)
+        {
+            if (!_touched[index]) return;             // let go just before the timer fired
+            var page = CurrentPage;
+            if (page.Touch != null) page.Touch.TryGetValue(index.ToString(), out m);
+            if (m == null || m.Silent) return;
+            _touchAsserted[index] = true;
+        }
+        SendSwitch(m, true);
     }
 
     void OnButton(int code, bool pressed)

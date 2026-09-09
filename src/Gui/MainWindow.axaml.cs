@@ -1609,6 +1609,10 @@ public partial class MainWindow : Window
     void OnEncoder(EncoderEventArgs e)
     {
         if ((uint)e.Index >= _val.Length) return;
+        // Raw panel events under Debug tools, so what the instrument reports on the
+        // Automap channel can be read off the log - including reports nobody's hand caused.
+        if (_engine.Config.ShowDebugTools)
+            Enqueue($"panel: encoder {e.Index + 1} {e.Delta:+#;-#;0} → {e.Value}");
         lock (_lock) { _val[e.Index] = e.Value; _encDirty[e.Index] = true; }
         if (LearnActive) Post(() => { if (_encoders[e.Index] != null) Select(_encoders[e.Index]); });
     }
@@ -1616,6 +1620,8 @@ public partial class MainWindow : Window
     void OnTouch(TouchEventArgs e)
     {
         if ((uint)e.Index >= _touch.Length) return;
+        if (_engine.Config.ShowDebugTools)
+            Enqueue($"panel: touch {e.Index + 1} {(e.Touched ? "on" : "off")}");
         lock (_lock) { _touch[e.Index] = e.Touched; _encDirty[e.Index] = true; }
         if (LearnActive && e.Touched)
             Post(() => { if (_encoders[e.Index] != null) { Select(_encoders[e.Index]); LearnConsumed(); } });
