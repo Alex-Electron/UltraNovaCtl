@@ -1228,7 +1228,12 @@ public sealed class AutomapEngine : IDisposable
         var page = CurrentPage;
         var map = page.Encoders != null && enc < page.Encoders.Length ? page.Encoders[enc] : null;
         string n = map != null && map.Silent ? "" : _values[enc].ToString();
-        string cell = _touched[enc] ? "[" + Centre(n, FieldWidth - 3) + "]" : Centre(n, FieldWidth - 1);
+        // Write the whole nine-column field, not eight of nine: the odd column out - 8,
+        // 17, 26, 35 … - was never ours, so anything the instrument left there (its own
+        // "edited, not saved" marker turns up between value fields) could not be cleared.
+        // Owning every column lets the next repaint wipe it. Labels already span all 72,
+        // so the values having no gap matches them.
+        string cell = _touched[enc] ? "[" + Centre(n, FieldWidth - 2) + "]" : Centre(n, FieldWidth);
         DisplayWrite(1, (byte)(enc * FieldWidth), cell);
     }
 
