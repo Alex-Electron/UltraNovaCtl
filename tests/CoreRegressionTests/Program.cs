@@ -243,9 +243,11 @@ static class Program
         using var log = new StreamWriter(System.IO.Path.Combine(outDir, "watch.log"), append: false) { AutoFlush = true };
         void Say(string t) { Console.WriteLine(t); log.WriteLine(t); }
 
-        // What the table says lives at each offset. Offsets are taken as given - whether
-        // they count from the start of the message or from the payload is exactly what
-        // this run is meant to find out.
+        // What the table says lives at each offset. Table offsets count from the start
+        // of the payload - message byte 13 - not from byte 0: the table is empty at 0..20,
+        // which is exactly the name at message bytes 15..30 seen from byte 13, and its
+        // last entry (510, Tweak 8 Select) lands on byte 523 with the payload ending at
+        // 524. Counted from byte 0, Polyphony Mode at 21 would sit inside the name.
         var byOffset = new Dictionary<int, List<string>>();
         var byCc = new Dictionary<string, List<string>>();
         if (tablePath != null && File.Exists(tablePath))
@@ -332,9 +334,13 @@ static class Program
             Say($"--- change #{snapshot} at +{clock.Elapsed.TotalSeconds:F0} s: {changed.Count} byte(s) ---");
             foreach (int i in changed)
             {
-                string claim = byOffset.TryGetValue(i, out var l) ? string.Join(" | ", l) : "(table has nothing at this offset)";
-                string alt = byOffset.TryGetValue(i - 13, out var l13) ? "   [if offsets count from the payload: " + string.Join(" | ", l13) + "]" : "";
-                Say($"  byte {i,3}: {baseline[i],3} -> {cur[i],3}   {claim}{alt}");
+                string claim = i < 15 ? "(header)"
+                    : i <= 30 ? "(patch name)"
+                    : i == 31 ? "(category)"
+                    : i == 32 ? "(genre)"
+                    : byOffset.TryGetValue(i - 13, out var l) ? string.Join(" | ", l)
+                    : "(table has nothing here)";
+                Say($"  byte {i,3} (table offset {i - 13,3}): {baseline[i],3} -> {cur[i],3}   {claim}");
             }
             if (seen.Length > 0)
             {
