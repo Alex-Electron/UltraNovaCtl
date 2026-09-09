@@ -24,6 +24,13 @@
   even sent, because the reader on pin 6 starts with the engine. And an Automap session
   does not suppress them, which is what I had suspected when three empty windows in a row
   turned out to mean only that nobody was turning a knob.
+- `PatchModel`, the editable draft. It holds the patch as it arrived alongside the patch
+  as it is being edited, which is where compare and undo come from without a second round
+  trip to the instrument, and it touches no hardware at all - a draft can be opened from a
+  file, edited with the synth unplugged, and sent later or never. Edits are addressed by
+  parameter-table offset, the way the table describes them, with the conversion to message
+  index in one place. A knob swept across its range collapses to a single undo step, and a
+  sweep that returns to where it started records nothing.
 - New engine events for what arrives that way: a whole patch, a status reply carrying
   firmware and Local Control, a parameter edited elsewhere, and a patch selected on the
   panel. Patch selection is sent as two data bytes against one NRPN, bank then slot, and

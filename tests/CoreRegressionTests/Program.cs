@@ -61,6 +61,13 @@ static class Program
             ("panel patch selection is reported as such", PanelPatchSelectionIsReportedAsSuch),
             ("an edited parameter is reported", AnEditedParameterIsReported),
             ("attaching without a connection fails quietly", AttachingWithoutAConnectionFailsQuietly),
+            ("the model edits by table offset", TheModelEditsByTableOffset),
+            ("the model knows what changed", TheModelKnowsWhatChanged),
+            ("undo and redo walk the edits", UndoAndRedoWalkTheEdits),
+            ("a swept knob is one undo step", ASweptKnobIsOneUndoStep),
+            ("the name is padded and truncated", TheNameIsPaddedAndTruncated),
+            ("the model round-trips byte for byte", TheModelRoundTripsByteForByte),
+            ("the model checksums its working bytes", TheModelChecksumsItsWorkingBytes),
             ("releasing notes without a connection is harmless", ReleaseWithoutConnectionIsHarmless),
             ("reopening outputs reports failure instead of throwing", ReopenOutputsReportsFailure),
             ("an unopened output is not usable", UnopenedOutputIsNotUsable),
@@ -1655,6 +1662,172 @@ static class Program
         True(!engine.EditorAttached, "and leaves the flag alone");
         engine.DetachEditor();
         True(!engine.RequestPatch(), "requests go nowhere rather than throwing");
+    }
+
+
+    // ---- patch model -------------------------------------------------------
+    //
+    // The editable draft. It never touches hardware, so all of this is exact.
+
+    static void TheModelEditsByTableOffset()
+    {
+        var m = PatchModel.FromDump(SyntheticDump());
+        byte was = m[79];
+        m[79] = (byte)(was ^ 0x7F);
+        Equal((byte)(was ^ 0x7F), m[79], "a written parameter reads back");
+        Equal(was, m.OriginalAt(79), "and the original is still remembered");
+
+        bool threw = false;
+        try { var _ = m[PatchModel.MaxOffset + 1]; } catch (ArgumentOutOfRangeException) { threw = true; }
+        True(threw, "an offset past the payload is refused");
+
+        threw = false;
+        try { m[-1] = 0; } catch (ArgumentOutOfRangeException) { threw = true; }
+        True(threw, "a negative offset is refused");
+
+        threw = false;
+        try { PatchModel.FromDump(new byte[10]); } catch (ArgumentException) { threw = true; }
+        True(threw, "a model cannot be built from something that is not a dump");
+    }
+
+    static void TheModelKnowsWhatChanged()
+    {
+        var m = PatchModel.FromDump(SyntheticDump());
+        True(!m.IsDirty, "a fresh model is clean");
+        Equal(0, m.ChangedOffsets.Count, "and nothing is listed as changed");
+
+        m[79] = (byte)(m[79] ^ 1);
+        m[100] = (byte)(m[100] ^ 1);
+        True(m.IsDirty, "an edit makes it dirty");
+        Equal(2, m.ChangedOffsets.Count, "both edits are listed");
+        Equal(79, m.ChangedOffsets[0], "in offset order");
+        Equal(100, m.ChangedOffsets[1], "second offset");
+
+        // Setting a parameter back by hand is not a change any more.
+        m[79] = m.OriginalAt(79);
+        Equal(1, m.ChangedOffsets.Count, "returning a value to its original clears it");
+
+        m.Revert();
+        True(!m.IsDirty, "revert makes it clean again");
+        True(!m.CanUndo, "and clears the undo history");
+    }
+
+    static void UndoAndRedoWalkTheEdits()
+    {
+        var m = PatchModel.FromDump(SyntheticDump());
+        byte a = m[79], b = m[100];
+
+        // Writing the value a parameter already holds is not an edit. Without this the
+        // undo history fills with nothing whenever the interface resends what it shows.
+        m[79] = a;
+        True(!m.CanUndo, "writing an unchanged value records no undo step");
+        True(!m.IsDirty, "and leaves the patch clean");
+
+        m[79] = 10;
+        m[100] = 20;
+        True(m.CanUndo, "there is something to undo");
+        True(!m.CanRedo, "and nothing to redo yet");
+
+        Equal(100, m.Undo(), "undo reports the offset it moved");
+        Equal(b, m[100], "and puts the value back");
+        Equal((byte)10, m[79], "leaving the earlier edit alone");
+
+        Equal(79, m.Undo(), "the second undo walks back further");
+        Equal(a, m[79], "restoring the first edit too");
+        True(!m.IsDirty, "undoing everything leaves it clean");
+        Equal(-1, m.Undo(), "undoing past the beginning reports nothing");
+
+        Equal(79, m.Redo(), "redo walks forward");
+        Equal((byte)10, m[79], "reapplying the value");
+        Equal(100, m.Redo(), "and again");
+        Equal((byte)20, m[100], "second value back");
+        Equal(-1, m.Redo(), "redoing past the end reports nothing");
+
+        // A new edit after an undo discards the redo branch.
+        m.Undo();
+        m[50] = 99;
+        True(!m.CanRedo, "editing after an undo drops what was undone");
+    }
+
+    static void ASweptKnobIsOneUndoStep()
+    {
+        var m = PatchModel.FromDump(SyntheticDump());
+        byte start = m[79];
+        for (byte v = 40; v <= 90; v++) m[79] = v;
+
+        Equal((byte)90, m[79], "the sweep landed on its last value");
+        Equal(79, m.Undo(), "one undo covers the whole sweep");
+        Equal(start, m[79], "back to where the knob started");
+        True(!m.CanUndo, "and there is nothing left behind it");
+
+        // Sweeping back to the starting value should leave no edit at all.
+        for (byte v = 40; v <= 90; v++) m[79] = v;
+        m[79] = start;
+        True(!m.CanUndo, "a round trip to the original value records nothing");
+        True(!m.IsDirty, "and leaves the patch clean");
+    }
+
+    static void TheNameIsPaddedAndTruncated()
+    {
+        var m = PatchModel.FromDump(SyntheticDump());
+        m.Name = "Poly Pad";
+        Equal("Poly Pad", m.Name, "a short name reads back trimmed");
+
+        var dump = m.ToDump();
+        Equal((byte)' ', dump[PatchProtocol.MessageIndex(PatchProtocol.NameOffset + 15)],
+              "and is padded with blanks to sixteen");
+
+        m.Name = "This name is far too long to fit";
+        Equal(16, m.Name.Length, "an over-long name is cut to sixteen");
+        Equal("This name is far", m.Name, "at the sixteenth character");
+
+        m.Name = "Tab\there";
+        Equal("Tab here", m.Name, "control characters become blanks");
+        Equal((byte)' ', m.ToDump()[PatchProtocol.MessageIndex(PatchProtocol.NameOffset + 3)],
+              "and are stored as blanks, not merely hidden when read back");
+
+        m.Name = null;
+        Equal("", m.Name, "a null name empties it rather than throwing");
+    }
+
+    static void TheModelRoundTripsByteForByte()
+    {
+        var original = SyntheticDump();
+        var m = PatchModel.FromDump(original);
+        var back = m.ToDump();
+        Equal(original.Length, back.Length, "the dump keeps its length");
+        for (int i = 0; i < original.Length; i++)
+            if (original[i] != back[i]) { True(false, $"byte {i} survived the round trip"); return; }
+        True(true, "an unedited model returns exactly what it was given");
+
+        // The header and terminator are outside the payload and must not move.
+        m[0] = 99;
+        var edited = m.ToDump();
+        Equal((byte)0xF0, edited[0], "the SysEx start is untouched by parameter edits");
+        Equal((byte)0xF7, edited[edited.Length - 1], "and so is the terminator");
+        True(PatchProtocol.IsDump(edited), "an edited model is still a valid dump");
+
+        // Editing the model must not disturb the caller's buffer.
+        Equal((byte)((13 * 7) & 0x7F), original[PatchProtocol.MessageIndex(0)],
+              "the array handed in is not edited behind the caller's back");
+
+        // Nor may the model hold a reference to it. The transport reuses its read buffer,
+        // so a model that aliased one would watch its own "original" change underneath it.
+        var fresh = SyntheticDump();
+        var m2 = PatchModel.FromDump(fresh);
+        byte remembered = m2.OriginalAt(79);
+        fresh[PatchProtocol.MessageIndex(79)] = (byte)(remembered ^ 0x55);
+        Equal(remembered, m2.OriginalAt(79),
+              "the model copies the dump rather than keeping the caller's array");
+        Equal(remembered, m2[79], "and its working bytes are its own too");
+    }
+
+    static void TheModelChecksumsItsWorkingBytes()
+    {
+        var m = PatchModel.FromDump(SyntheticDump());
+        Equal(0xA01F9F20u, m.Checksum(), "an unedited model checksums like its dump");
+        m[79] = (byte)(m[79] ^ 0x40);
+        True(m.Checksum() != 0xA01F9F20u, "and an edit moves the checksum");
     }
 
     static void ReleaseWithoutConnectionIsHarmless()
