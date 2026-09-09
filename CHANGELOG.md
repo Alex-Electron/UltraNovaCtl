@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 1.2.2 — 2026-09-09
+
+Tried on the instrument before release: with the relay unticked, the mod wheel on its
+factory route no longer reaches the output, while the same wheel reassigned to another
+CC still does.
 
 - The keyboard-and-wheels relay switch now does what its label says. The first cut gated
   only the Port 1 copy of the wheels, and the Automap stream - the copy that normally wins -
