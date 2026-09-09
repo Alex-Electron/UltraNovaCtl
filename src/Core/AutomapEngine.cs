@@ -84,6 +84,24 @@ public sealed class AutomapEngine : IDisposable
 
     /// <summary>Anything arriving on the synth's ordinary MIDI port.</summary>
     public event EventHandler<MidiInEventArgs> PortMidi;
+
+    /// <summary>
+    /// A complete 526-byte patch arrived, either because it was asked for or because the
+    /// patch was changed on the panel. Raised on the Port 1 reader thread.
+    /// </summary>
+    public event EventHandler<PatchEventArgs> PatchReceived;
+
+    /// <summary>The instrument answered a status request. Raised on the reader thread.</summary>
+    public event EventHandler<StatusEventArgs> StatusReceived;
+
+    /// <summary>
+    /// A parameter was edited somewhere other than here - the panel, or another editor.
+    /// Raised on the reader thread for both plain controllers and NRPN.
+    /// </summary>
+    public event EventHandler<ParameterEventArgs> ParameterChanged;
+
+    /// <summary>A patch was selected on the panel. Raised on the reader thread.</summary>
+    public event EventHandler<PatchSelectedEventArgs> PatchSelected;
     public event EventHandler<string> Log;
 
     /// <summary>Every message that left through a MIDI output, already formatted. Kept
@@ -212,7 +230,21 @@ public sealed class AutomapEngine : IDisposable
     readonly object _writeLock = new();
 
     IntPtr _filter = IntPtr.Zero, _readPin = IntPtr.Zero, _writePin = IntPtr.Zero;
-    IntPtr _midiPin = IntPtr.Zero;      // Port 1: notes, wheels, aftertouch
+    IntPtr _midiPin = IntPtr.Zero;      // Port 1 read: notes, wheels, aftertouch
+
+    /// <summary>
+    /// Port 1's private write pin, the editor's way in. The instrument publishes Port 1
+    /// twice: pins 4 and 8 in standard MIDI, which the system claims as the WinMM device,
+    /// and pins 6 and 10 behind a Novation subformat that Windows never takes. Pin 6 is
+    /// already read for the keyboard; pin 10 is the matching writer, and until now nothing
+    /// used it. Requests sent there are answered on pin 6 whatever GLOBAL MIDI Out is set
+    /// to, which is how the native editor works while a DAW keeps the public port.
+    /// </summary>
+    IntPtr _editorPin = IntPtr.Zero;
+    uint _editorPinId = uint.MaxValue;
+    Guid _editorSub = Guid.Empty;
+    readonly object _editorLock = new();
+    readonly NrpnReader _nrpn = new();
     Thread _reader, _painter, _midiReader;
     volatile bool _stop;
     volatile bool _demo;
@@ -384,6 +416,24 @@ public sealed class AutomapEngine : IDisposable
                 break;
             }
         }
+        // The matching private writer. Found here, while the pin list is in hand, but
+        // not opened: an editor session claims it, and an Automap-only run should leave
+        // the instrument's input alone.
+        foreach (var p1 in pins)
+        {
+            if (!p1.IsMusic || p1.Ranges.Count == 0) continue;
+            if (p1.DataFlow != Pins.DATAFLOW_IN) continue;
+            if (p1.Name.IndexOf("Port 1", StringComparison.OrdinalIgnoreCase) < 0) continue;
+            foreach (var range in p1.Ranges)
+            {
+                if (range.SubFormat != Ks.KSDATAFORMAT_SUBTYPE_NOVATION_PORT1) continue;
+                _editorPinId = p1.Id;
+                _editorSub = range.SubFormat;
+                break;
+            }
+            if (_editorPinId != uint.MaxValue) break;
+        }
+
         if (chosen != null)
         {
             _midiPin = OpenPin(chosen.Id, false, chosenSub);
@@ -638,6 +688,139 @@ public sealed class AutomapEngine : IDisposable
         return OpenOutputs();
     }
 
+    // ---- editor transport --------------------------------------------------
+
+    /// <summary>True while this engine holds the instrument's private editor input.</summary>
+    public bool EditorAttached { get; private set; }
+
+    /// <summary>
+    /// Claim the private editor channel and introduce ourselves the way the native plug-in
+    /// does: transport enable, a status request that doubles as hello, then ask for the
+    /// current edit buffer. The answers arrive on the existing Port 1 reader, so nothing
+    /// here starts a second reader - pin 6 has one reader and only one.
+    ///
+    /// Refused while the native editor owns the hardware. Two editors writing to one edit
+    /// buffer is not something the instrument arbitrates, so we simply do not.
+    /// </summary>
+    public bool AttachEditor()
+    {
+        lock (_editorLock)
+        {
+            if (EditorAttached) return true;
+            if (_filter == IntPtr.Zero) { Say("editor: not connected"); return false; }
+            if (_editorPinId == uint.MaxValue)
+            { Say("editor: no private Port 1 write pin on this device"); return false; }
+            if (NativeEditorDriving())
+            { Say("editor: the Novation editor owns the instrument, not attaching"); return false; }
+
+            _editorPin = OpenPin(_editorPinId, true, _editorSub);
+            if (_editorPin == IntPtr.Zero) { Say("editor: write pin would not open"); return false; }
+
+            _nrpn.Reset();
+            EditorAttached = true;
+            Say($"editor: attached on pin {_editorPinId}");
+        }
+
+        SendToInstrument(PatchProtocol.TransportEnable);
+        SendToInstrument(PatchProtocol.RequestStatus());
+        SendToInstrument(PatchProtocol.RequestEditBuffer());
+        return true;
+    }
+
+    /// <summary>Release the editor channel, sending the transport disable the plug-in sends.</summary>
+    public void DetachEditor()
+    {
+        lock (_editorLock)
+        {
+            if (!EditorAttached) return;
+            SendToInstrumentLocked(PatchProtocol.TransportDisable);
+            EditorAttached = false;
+            ClosePin(ref _editorPin);
+            Say("editor: detached");
+        }
+    }
+
+    /// <summary>Ask for the current edit buffer. The reply arrives as PatchReceived.</summary>
+    public bool RequestPatch() => SendToInstrument(PatchProtocol.RequestEditBuffer());
+
+    /// <summary>Ask a stored slot for its contents. Bank is one-based, program zero-based.</summary>
+    public bool RequestStoredPatch(int bank, int program)
+        => SendToInstrument(PatchProtocol.RequestStored(bank, program));
+
+    /// <summary>Write raw bytes to the instrument's private input.</summary>
+    bool SendToInstrument(byte[] message)
+    {
+        lock (_editorLock) return SendToInstrumentLocked(message);
+    }
+
+    bool SendToInstrumentLocked(byte[] message)
+    {
+        if (_editorPin == IntPtr.Zero) return false;
+        if (!Ks.WriteMidi(_editorPin, message, out int err))
+        {
+            Say($"editor: write failed, error {err}");
+            return false;
+        }
+        Activity.Touch(MidiActivity.Source.PanelOut);
+        return true;
+    }
+
+    /// <summary>
+    /// Sort one SysEx frame from the Port 1 reader. Dumps and status replies belong to the
+    /// editor; anything else is left to the log, as before.
+    /// </summary>
+    internal void DispatchEditorSysEx(byte[] sx)
+    {
+        if (PatchProtocol.IsDump(sx))
+        {
+            var (bank, program) = PatchProtocol.SlotOf(sx);
+            PatchReceived?.Invoke(this, new PatchEventArgs
+            { Data = sx, Bank = bank, Program = program, Name = PatchProtocol.NameOf(sx) });
+            return;
+        }
+        if (PatchProtocol.IsStatusReply(sx))
+        {
+            var fw = PatchProtocol.SenderFirmware(sx);
+            StatusReceived?.Invoke(this, new StatusEventArgs
+            {
+                LocalOn = PatchProtocol.LocalOn(sx),
+                Major = fw.Major, Minor = fw.Minor, Build = fw.Build
+            });
+        }
+    }
+
+    /// <summary>
+    /// Sort one channel message from the Port 1 reader for the editor. The instrument
+    /// reports edits made elsewhere as plain controllers and as NRPN, both on channel 2,
+    /// and announces patch selection as an NRPN carrying bank and slot.
+    /// </summary>
+    internal void DispatchEditorChannelMessage(byte status, byte d1, byte d2)
+    {
+        if ((status & 0xF0) != 0xB0) return;
+
+        if (_nrpn.Feed(status, d1, d2, out var n))
+        {
+            if (NrpnReader.IsPatchSelectParameter(n))
+            {
+                // Selection arrives as two Data Entry bytes against one parameter. The
+                // first carries the bank and completes nothing, so it is swallowed rather
+                // than reported as an edit of a parameter that does not exist.
+                if (n.HasLsb)
+                    PatchSelected?.Invoke(this, new PatchSelectedEventArgs
+                    { Bank = n.Data, Program = n.DataLsb });
+                return;
+            }
+            ParameterChanged?.Invoke(this, new ParameterEventArgs
+            { IsNrpn = true, Msb = n.Msb, Lsb = n.Lsb, Value = n.Data, Channel = n.Channel });
+            return;
+        }
+
+        // The four controllers that carry NRPN are not parameters in their own right.
+        if (d1 is 6 or 38 or 98 or 99) return;
+        ParameterChanged?.Invoke(this, new ParameterEventArgs
+        { IsNrpn = false, Controller = d1, Value = d2, Channel = (status & 0x0F) + 1 });
+    }
+
     IntPtr OpenPin(uint id, bool write, Guid sub)
     {
         IntPtr pin = Ks.CreateMidiPin(_filter, id, write, sub, out uint status);
@@ -695,6 +878,7 @@ public sealed class AutomapEngine : IDisposable
         _midiReader = null;
         CloseOutputs();
         foreach (var t in _touchPending) t?.Change(Timeout.Infinite, Timeout.Infinite);
+        DetachEditor();
         ClosePin(ref _midiPin);
         ClosePin(ref _readPin);
         ClosePin(ref _writePin);
@@ -1638,6 +1822,7 @@ public sealed class AutomapEngine : IDisposable
                         status = 0;
                         Activity.Touch(MidiActivity.Source.Synth);
                         NoteSysEx("midi", sx);
+                        DispatchEditorSysEx(sx);
                         continue;
                     }
                     if (b >= 0xF0) { pending.RemoveAt(0); status = 0; continue; }
@@ -1654,6 +1839,7 @@ public sealed class AutomapEngine : IDisposable
                     Activity.Touch(MidiActivity.ClassifyPort(status, d1));
                     OnPortMidiAnalog(status, d1, d2);
                     ForwardKeyboardMidi(status, d1, d2);
+                    DispatchEditorChannelMessage(status, d1, d2);
                     PortMidi?.Invoke(this, new MidiInEventArgs
                     { Status = status, Data1 = d1, Data2 = d2 });
                 }

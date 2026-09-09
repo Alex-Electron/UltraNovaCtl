@@ -14,6 +14,7 @@ static class Program
             return EchoProbe(args.Length > 1 && args[1] == "local-off");
         if (args.Length >= 1 && args[0] == "--locks") return LockProbe();
         if (args.Length >= 3 && args[0] == "--watch") return WatchEdits(args);
+        if (args.Length >= 1 && args[0] == "--editor") return EditorSession(args);
 
         (string name, Action run)[] tests =
         {
@@ -42,6 +43,23 @@ static class Program
             ("latched lamps stay within the rail budget", LatchedLampsStayWithinTheRailBudget),
             ("activity lamps split hands from instrument", ActivityLampsSplitHandsFromInstrument),
             ("a touch pulse is a report, not a hand", ATouchPulseIsAReportNotAHand),
+            ("patch commands have the right shape", PatchCommandsHaveTheRightShape),
+            ("a dump is recognised by shape and header", ADumpIsRecognisedByShapeAndHeader),
+            ("the checksum matches the verified algorithm", TheChecksumMatchesTheVerifiedAlgorithm),
+            ("the patch name lives at table offset two", TheNameLivesAtTableOffsetTwo),
+            ("table offsets count from byte thirteen", TableOffsetsCountFromByteThirteen),
+            ("firmware version unpacks from the packed byte", FirmwareVersionUnpacksFromThePackedByte),
+            ("a status reply carries Local Control", AStatusReplyCarriesLocalControl),
+            ("the checksum reply is five seven-bit groups", TheChecksumReplyIsFiveSevenBitGroups),
+            ("NRPN bytes reassemble into one parameter", NrpnBytesReassembleIntoOneParameter),
+            ("patch selection is bank then slot", PatchSelectionIsBankThenSlotNotAWideValue),
+            ("NRPN ignores what is not its own", NrpnIgnoresWhatIsNotItsOwn),
+            ("a dump raises PatchReceived", ADumpRaisesPatchReceived),
+            ("a status reply raises StatusReceived", AStatusReplyRaisesStatusReceived),
+            ("SysEx that is neither is ignored", SysExThatIsNeitherIsIgnored),
+            ("panel patch selection is reported as such", PanelPatchSelectionIsReportedAsSuch),
+            ("an edited parameter is reported", AnEditedParameterIsReported),
+            ("attaching without a connection fails quietly", AttachingWithoutAConnectionFailsQuietly),
             ("releasing notes without a connection is harmless", ReleaseWithoutConnectionIsHarmless),
             ("reopening outputs reports failure instead of throwing", ReopenOutputsReportsFailure),
             ("an unopened output is not usable", UnopenedOutputIsNotUsable),
@@ -362,6 +380,73 @@ static class Program
     ///
     ///   --locks
     /// </summary>
+
+    /// <summary>
+    /// End-to-end check of the editor transport through the real engine: start it, attach
+    /// on the private Port 1 pair, and print what the instrument sends back. This is the
+    /// only way to exercise the reader hook, since the regression checks drive the sorting
+    /// code directly and never touch a pin.
+    ///
+    /// Read-only towards the instrument: the attach sends transport framing plus a status
+    /// and a dump request, and detach sends the matching transport disable. Nothing is
+    /// written to the edit buffer or to memory.
+    /// </summary>
+    static int EditorSession(string[] args)
+    {
+        int seconds = args.Length > 1 && int.TryParse(args[1], out int s) ? s : 30;
+
+        using var engine = new AutomapEngine();
+        engine.Log += (_, m) => Console.WriteLine("  " + m);
+
+        int dumps = 0, parameters = 0, selections = 0, statuses = 0;
+        engine.StatusReceived += (_, e) =>
+        {
+            statuses++;
+            Console.WriteLine($"СТАТУС: прошивка {e.Version}, Local {(e.LocalOn ? "On" : "Off")}");
+        };
+        engine.PatchReceived += (_, e) =>
+        {
+            dumps++;
+            string where = e.Bank == 0 && e.Program == 0
+                ? "буфер редактирования" : $"банк {e.Bank} слот {e.Program}";
+            Console.WriteLine($"ПАТЧ: '{e.Name}' из {where}, "
+                + $"контрольная сумма 0x{PatchProtocol.Checksum(e.Data):X8}");
+        };
+        engine.PatchSelected += (_, e) =>
+        {
+            selections++;
+            Console.WriteLine($"ВЫБРАН ПАТЧ: банк {e.Bank} слот {e.Program}");
+        };
+        engine.ParameterChanged += (_, e) =>
+        {
+            parameters++;
+            if (parameters <= 40) Console.WriteLine("ПРАВКА: " + e);
+        };
+
+        if (!engine.Start())
+        {
+            Console.WriteLine("движок не стартовал - прибор подключён? наше приложение закрыто?");
+            return 1;
+        }
+
+        if (!engine.AttachEditor())
+        {
+            Console.WriteLine("редактор не подключился");
+            engine.Stop();
+            return 2;
+        }
+
+        Console.WriteLine($"\nслушаю {seconds} с - покрути ручку и смени патч\n");
+        Thread.Sleep(seconds * 1000);
+
+        engine.DetachEditor();
+        engine.Stop();
+
+        Console.WriteLine($"\nИТОГО: статусов {statuses}, патчей {dumps}, "
+            + $"смен патча {selections}, правок {parameters}");
+        return statuses > 0 && dumps > 0 ? 0 : 3;
+    }
+
     static int LockProbe()
     {
         foreach (var (name, meaning) in NativeLocks.Known)
@@ -1166,6 +1251,326 @@ static class Program
         True(engine.HeldRouteOf(touch) != null, "a held touch is a press");
         engine.OnTouch(2, false);
         True(engine.HeldRouteOf(touch) == null, "and letting go releases it");
+    }
+
+
+    // ---- patch protocol ----------------------------------------------------
+    //
+    // These are pure byte functions, so they need no instrument. The checksum vector
+    // below is synthetic on purpose: the algorithm itself was verified against the
+    // instrument's own answers for 508 of 512 slots, and the four that differed were
+    // reproduced exactly by the genre-bit rule, but none of that patch data belongs in
+    // this repository. What these checks defend is that the C# implementation still
+    // computes what that verified algorithm computes.
+
+    /// <summary>A synthetic dump with a deterministic payload, valid header and terminator.</summary>
+    static byte[] SyntheticDump()
+    {
+        var d = new byte[PatchProtocol.DumpLength];
+        byte[] head = { 0xF0, 0x00, 0x20, 0x29, 0x03, 0x01, 0x7F };
+        head.CopyTo(d, 0);
+        d[7] = PatchProtocol.CmdDumpReply;
+        d[9] = 0x10;                                   // firmware 2.0.00
+        for (int i = 13; i <= 524; i++) d[i] = (byte)((i * 7) & 0x7F);
+        d[PatchProtocol.DumpLength - 1] = 0xF7;
+        return d;
+    }
+
+    static void PatchCommandsHaveTheRightShape()
+    {
+        var m = PatchProtocol.Command(PatchProtocol.CmdStored, PatchProtocol.CtrlChecksum, 2, 78);
+        Equal(PatchProtocol.CommandLength, m.Length, "command length");
+        Equal((byte)0xF0, m[0], "starts with SysEx");
+        Equal((byte)0x29, m[3], "manufacturer byte");
+        Equal(PatchProtocol.CmdStored, m[7], "command byte");
+        Equal(PatchProtocol.CtrlChecksum, m[8], "control byte");
+        Equal((byte)2, m[11], "bank");
+        Equal((byte)78, m[12], "program");
+        Equal((byte)0xF7, m[13], "ends with EOX");
+
+        bool threw = false;
+        try { PatchProtocol.Command(0x40, 0, 0, 200); }
+        catch (ArgumentOutOfRangeException) { threw = true; }
+        True(threw, "a program number above 127 is refused rather than truncated");
+    }
+
+    static void ADumpIsRecognisedByShapeAndHeader()
+    {
+        var d = SyntheticDump();
+        True(PatchProtocol.IsDump(d), "a well-formed dump is recognised");
+
+        var shorter = new byte[d.Length - 1];
+        Array.Copy(d, shorter, shorter.Length);
+        shorter[shorter.Length - 1] = 0xF7;
+        True(!PatchProtocol.IsDump(shorter), "a dump of the wrong length is refused");
+
+        var alien = (byte[])d.Clone();
+        alien[3] = 0x2A;                                // someone else's manufacturer
+        True(!PatchProtocol.IsDump(alien), "another maker's SysEx is refused");
+
+        var unterminated = (byte[])d.Clone();
+        unterminated[unterminated.Length - 1] = 0x00;
+        True(!PatchProtocol.IsDump(unterminated), "a message with no terminator is refused");
+
+        True(!PatchProtocol.IsDump(null), "null is refused rather than throwing");
+    }
+
+    static void TheChecksumMatchesTheVerifiedAlgorithm()
+    {
+        var d = SyntheticDump();
+        Equal(0xA01F9F20u, PatchProtocol.Checksum(d), "checksum of the known vector");
+        Equal(0xA01F9FA0u, PatchProtocol.Checksum(d, setGenreHighBit: true),
+              "the genre bit adds exactly 0x80");
+
+        var moved = (byte[])d.Clone();
+        moved[300] ^= 0x01;
+        True(PatchProtocol.Checksum(moved) != PatchProtocol.Checksum(d),
+             "one changed payload byte changes the checksum");
+
+        // Bytes outside 13..524 are not covered, so touching them must not move it.
+        var outside = (byte[])d.Clone();
+        outside[12] = 77;
+        Equal(PatchProtocol.Checksum(d), PatchProtocol.Checksum(outside),
+              "the header is outside the checksummed payload");
+    }
+
+    static void TheNameLivesAtTableOffsetTwo()
+    {
+        var d = SyntheticDump();
+        const string wanted = "Poly Pad";
+        for (int i = 0; i < PatchProtocol.NameLength; i++)
+        {
+            char c = i < wanted.Length ? wanted[i] : ' ';
+            d[PatchProtocol.MessageIndex(PatchProtocol.NameOffset + i)] = (byte)c;
+        }
+        Equal(wanted, PatchProtocol.NameOf(d), "the name reads back with blanks trimmed");
+        Equal(15, PatchProtocol.MessageIndex(PatchProtocol.NameOffset), "the name starts at byte 15");
+    }
+
+    static void TableOffsetsCountFromByteThirteen()
+    {
+        Equal(13, PatchProtocol.MessageIndex(0), "offset zero is byte 13");
+        Equal(92, PatchProtocol.MessageIndex(79), "Filter1 Frequency at offset 79 is byte 92");
+
+        var d = SyntheticDump();
+        d[PatchProtocol.MessageIndex(79)] = 64;
+        True(PatchProtocol.TryValue(d, 79, out byte v), "a parameter inside the payload is readable");
+        Equal((byte)64, v, "and reads back what was written");
+        True(!PatchProtocol.TryValue(d, 5000, out _), "an offset past the payload is refused");
+        True(!PatchProtocol.TryValue(d, -1, out _), "a negative offset is refused");
+    }
+
+    static void FirmwareVersionUnpacksFromThePackedByte()
+    {
+        var v20 = PatchProtocol.Firmware(0x10, 0x00);
+        Equal(2, v20.Major, "major");
+        Equal(0, v20.Minor, "minor");
+        Equal(0, v20.Build, "build");
+
+        var other = PatchProtocol.Firmware(0x0B, 0x05);
+        Equal(1, other.Major, "0x0B is major 1");
+        Equal(3, other.Minor, "and minor 3");
+        Equal(5, other.Build, "and build 5");
+    }
+
+    static void AStatusReplyCarriesLocalControl()
+    {
+        True(PatchProtocol.IsStatusReply(StatusReply(1)), "a status reply is recognised");
+        True(PatchProtocol.LocalOn(StatusReply(1)), "byte 12 of one means Local is on");
+        True(!PatchProtocol.LocalOn(StatusReply(0)), "byte 12 of zero means Local is off");
+        True(!PatchProtocol.IsStatusReply(SyntheticDump()), "a patch dump is not a status reply");
+
+        var fw = PatchProtocol.SenderFirmware(StatusReply(1));
+        Equal(2, fw.Major, "the reply reports the instrument's own firmware");
+        Equal(0, fw.Minor, "minor of the reported firmware");
+    }
+
+    static byte[] StatusReply(byte local) => new byte[]
+    { 0xF0, 0x00, 0x20, 0x29, 0x03, 0x01, 0x7F, 0x20, 0x00, 0x10, 0x00, 0x00, local, 0x01, 0xF7 };
+
+    static void TheChecksumReplyIsFiveSevenBitGroups()
+    {
+        const uint value = 0x062F1492;
+        var m = new byte[19];
+        byte[] head = { 0xF0, 0x00, 0x20, 0x29, 0x03, 0x01, 0x7F };
+        head.CopyTo(m, 0);
+        long v = value;
+        for (int i = 13; i <= 17; i++) { m[i] = (byte)(v & 0x7F); v >>= 7; }
+        m[18] = 0xF7;
+
+        True(PatchProtocol.TryReadChecksumReply(m, out uint got), "the reply decodes");
+        Equal(value, got, "five seven-bit groups reassemble the instrument's value");
+
+        m[15] = 0xFF;                                   // not seven-bit clean
+        True(!PatchProtocol.TryReadChecksumReply(m, out _), "a byte with bit 7 set is refused");
+    }
+
+    static void NrpnBytesReassembleIntoOneParameter()
+    {
+        var r = new NrpnReader();
+        True(!r.Feed(0xB1, 99, 62, out _), "selecting the parameter reports nothing yet");
+        True(!r.Feed(0xB1, 98, 0, out _), "nor does the second half");
+        True(r.Feed(0xB1, 6, 7, out var n), "the data byte completes it");
+        Equal(62, n.Msb, "parameter high half");
+        Equal(0, n.Lsb, "parameter low half");
+        Equal((byte)7, n.Data, "value");
+        Equal(2, n.Channel, "channel is reported one-based");
+        True(!n.HasLsb, "with no second data byte");
+
+        // The instrument sends several values against one selected parameter.
+        True(r.Feed(0xB1, 6, 9, out var again), "a second value needs no reselection");
+        Equal((byte)9, again.Data, "and carries the new value");
+    }
+
+    static void PatchSelectionIsBankThenSlotNotAWideValue()
+    {
+        var r = new NrpnReader();
+        r.Feed(0xB1, 99, 63, out _);
+        r.Feed(0xB1, 98, 1, out _);
+        r.Feed(0xB1, 6, 3, out _);
+        True(r.Feed(0xB1, 38, 79, out var n), "the second data byte completes the announcement");
+        True(NrpnReader.IsPatchSelect(n), "it is recognised as patch selection");
+        Equal((byte)3, n.Data, "Data Entry MSB is the bank");
+        Equal((byte)79, n.DataLsb, "Data Entry LSB is the slot");
+        True(n.Wide != 79, "reading the pair as one wide value would be wrong here");
+    }
+
+    static void NrpnIgnoresWhatIsNotItsOwn()
+    {
+        var r = new NrpnReader();
+        True(!r.Feed(0xB1, 6, 5, out _), "data entry with no parameter selected is ignored");
+        True(!r.Feed(0x91, 60, 100, out _), "a note is not an NRPN");
+        True(!r.Feed(0xB1, 74, 90, out _), "an ordinary controller is not an NRPN");
+
+        r.Feed(0xB1, 99, 62, out _);
+        r.Feed(0xB1, 98, 0, out _);
+        r.Reset();
+        True(!r.Feed(0xB1, 6, 5, out _), "a reset forgets the selected parameter");
+    }
+
+
+    // ---- editor transport --------------------------------------------------
+    //
+    // The instrument's side of this was measured: on the private Port 1 pair a dump
+    // answers a request, a status reply carries firmware and Local Control, and the panel
+    // announces both parameter edits and patch selection on channel 2. These checks drive
+    // the same sorting code with those exact message shapes, so the wiring can be trusted
+    // without an instrument on the desk.
+
+    static void ADumpRaisesPatchReceived()
+    {
+        using var engine = new AutomapEngine();
+        engine.Config.OutputPort = "";
+
+        var d = SyntheticDump();
+        d[11] = 3; d[12] = 79;
+        const string wanted = "Poly Pad";
+        for (int i = 0; i < PatchProtocol.NameLength; i++)
+            d[PatchProtocol.MessageIndex(PatchProtocol.NameOffset + i)] =
+                (byte)(i < wanted.Length ? wanted[i] : ' ');
+
+        PatchEventArgs? seen = null;
+        engine.PatchReceived += (_, e) => seen = e;
+        engine.DispatchEditorSysEx(d);
+
+        True(seen != null, "a dump is reported");
+        Equal(wanted, seen!.Name, "with its name");
+        Equal(3, seen!.Bank, "and its bank");
+        Equal(79, seen!.Program, "and its slot");
+        Equal(PatchProtocol.DumpLength, seen!.Data.Length, "and the whole message is kept");
+    }
+
+    static void AStatusReplyRaisesStatusReceived()
+    {
+        using var engine = new AutomapEngine();
+        engine.Config.OutputPort = "";
+
+        StatusEventArgs? seen = null;
+        engine.StatusReceived += (_, e) => seen = e;
+        engine.DispatchEditorSysEx(StatusReply(1));
+
+        True(seen != null, "a status reply is reported");
+        True(seen!.LocalOn, "Local Control is read from it");
+        Equal("2.0.00", seen!.Version, "and the firmware version");
+
+        engine.DispatchEditorSysEx(StatusReply(0));
+        True(!seen!.LocalOn, "Local off is read too");
+    }
+
+    static void SysExThatIsNeitherIsIgnored()
+    {
+        using var engine = new AutomapEngine();
+        engine.Config.OutputPort = "";
+
+        int patches = 0, statuses = 0;
+        engine.PatchReceived += (_, _) => patches++;
+        engine.StatusReceived += (_, _) => statuses++;
+
+        engine.DispatchEditorSysEx(new byte[] { 0xF0, 0x7E, 0x00, 0x06, 0x01, 0xF7 });
+        engine.DispatchEditorSysEx(new byte[] { 0xF0, 0x00, 0x01, 0xF7 });
+        Equal(0, patches, "an unrelated SysEx is not a patch");
+        Equal(0, statuses, "nor a status reply");
+    }
+
+    static void PanelPatchSelectionIsReportedAsSuch()
+    {
+        using var engine = new AutomapEngine();
+        engine.Config.OutputPort = "";
+
+        PatchSelectedEventArgs? picked = null;
+        int parameters = 0;
+        engine.PatchSelected += (_, e) => picked = e;
+        engine.ParameterChanged += (_, _) => parameters++;
+
+        // Exactly what the instrument sent when a patch was chosen on the panel.
+        engine.DispatchEditorChannelMessage(0xB1, 99, 63);
+        engine.DispatchEditorChannelMessage(0xB1, 98, 1);
+        engine.DispatchEditorChannelMessage(0xB1, 6, 3);
+        engine.DispatchEditorChannelMessage(0xB1, 38, 79);
+
+        True(picked != null, "patch selection is reported");
+        Equal(3, picked!.Bank, "bank comes from the Data Entry MSB");
+        Equal(79, picked!.Program, "slot comes from the Data Entry LSB");
+        Equal(0, parameters, "and it is not also reported as a parameter edit");
+    }
+
+    static void AnEditedParameterIsReported()
+    {
+        using var engine = new AutomapEngine();
+        engine.Config.OutputPort = "";
+
+        var seen = new List<ParameterEventArgs>();
+        engine.ParameterChanged += (_, e) => seen.Add(e);
+
+        // Filter1 Frequency under the hand, as captured from the panel.
+        engine.DispatchEditorChannelMessage(0xB1, 74, 90);
+        engine.DispatchEditorChannelMessage(0xB1, 74, 94);
+        Equal(2, seen.Count, "each controller value is reported");
+        True(!seen[0].IsNrpn, "as a plain controller");
+        Equal(74, seen[0].Controller, "with its number");
+        Equal(94, seen[1].Value, "and its value");
+        Equal(2, seen[0].Channel, "on channel 2, one-based");
+
+        // An NRPN edit: the four carrier controllers must not also count as parameters.
+        seen.Clear();
+        engine.DispatchEditorChannelMessage(0xB1, 99, 62);
+        engine.DispatchEditorChannelMessage(0xB1, 98, 0);
+        engine.DispatchEditorChannelMessage(0xB1, 6, 7);
+        Equal(1, seen.Count, "an NRPN is one event, not three");
+        True(seen[0].IsNrpn, "reported as an NRPN");
+        Equal(62, seen[0].Msb, "with its parameter number");
+        Equal(7, seen[0].Value, "and its value");
+    }
+
+    static void AttachingWithoutAConnectionFailsQuietly()
+    {
+        using var engine = new AutomapEngine();
+        engine.Config.OutputPort = "";
+        True(!engine.EditorAttached, "a fresh engine is not attached");
+        True(!engine.AttachEditor(), "attaching without a connection is refused");
+        True(!engine.EditorAttached, "and leaves the flag alone");
+        engine.DetachEditor();
+        True(!engine.RequestPatch(), "requests go nowhere rather than throwing");
     }
 
     static void ReleaseWithoutConnectionIsHarmless()

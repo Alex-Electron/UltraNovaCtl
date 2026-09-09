@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+- The editor transport, the piece everything else waits on. The instrument publishes
+  Port 1 twice: a standard-MIDI pair Windows claims as the WinMM device, and a private
+  pair behind a Novation subformat that Windows never takes. Pin 6 of that private pair
+  was already read for the keyboard; pin 10, its writer, was used by nothing. The engine
+  now claims it on request and speaks the patch protocol over it - transport framing, a
+  status request that doubles as hello, and requests for the edit buffer or a stored slot.
+  Answers arrive on the existing reader, so pin 6 still has exactly one reader.
+  Measured on the instrument with GLOBAL MIDI Out off, which is the point: the private
+  pair answers requests, announces patch selection, and streams live parameter edits
+  regardless of that setting, while the public pair stays free for a DAW. The editor
+  will therefore never ask anyone to change a global setting.
+- New engine events for what arrives that way: a whole patch, a status reply carrying
+  firmware and Local Control, a parameter edited elsewhere, and a patch selected on the
+  panel. Patch selection is sent as two data bytes against one NRPN, bank then slot, and
+  is reported as a selection rather than as an edit of a parameter that does not exist -
+  a distinction a check caught before the instrument did.
+- `PatchProtocol` gathers the protocol as pure functions over bytes: command building,
+  dump and status recognition, the patch name at table offset 2, the offset base of 13,
+  firmware unpacking, and the checksum. The checksum was cross-checked offline against
+  the four slots whose values the instrument reported differently, and the documented
+  genre-bit rule reproduced all four exactly.
+- The check runner gained a read-only `--editor` mode that drives the whole path through
+  the real engine on connected hardware, and `KsMidiMon` gained `--editor-port`, which
+  attaches to any private port by name or by explicit read:write pin numbers.
+- Fixed in `KsMidiMon`: a read on a pin that never sends blocked in the driver, so the
+  monitor loop never returned to its own clock and the process outlived its deadline
+  holding its own executable. It now cancels pending IO and carries a watchdog, the same
+  treatment the engine has had since 1.2.1. Also, the monitor hardcoded the standard MIDI
+  subformat and so could not open either private port at all.
+
 - MIDI activity lamps in the instrument-state strip, one per place MIDI can move: Panel
   in, Panel out, Keys, Synth, DAW out, and Learn in while learning. Each lights for a
   moment on a message; the tooltip says what the lamp means and how many messages it has
