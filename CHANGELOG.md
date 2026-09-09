@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- The keyboard-and-wheels relay switch now does what its label says. The first cut gated
+  only the Port 1 copy of the wheels, and the Automap stream - the copy that normally wins -
+  went on regardless, so unticking it changed almost nothing for wheels. The rule is now
+  applied to the assignment rather than the path: with the relay off, a wheel or pedal on
+  its factory route is held back whichever path delivered it, and an assignment the user
+  changed is never held back, because it is not something the instrument's own port sends.
+- A momentary switch held down while its assignment is edited is released on the route it
+  was pressed on. The held state remembered only the release value, so changing the
+  channel or number under a held pedal sent the release to the new route and left the old
+  control asserted for good - the same family as the stuck sustain, found by review. The
+  GUI now releases whatever a mapping asserts on any routing change, not only when leaving
+  a note.
+- The `--echo local-off` probe says which values it actually sends (33 and 99, not 0 and
+  127) and puts Local back the way it found it instead of always on.
+
 ## 1.2.1 — 2026-09-09
 
 Core work dates from 2026-09-01/02. The engine half of it was lost to a file-level

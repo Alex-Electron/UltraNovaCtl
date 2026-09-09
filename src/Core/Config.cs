@@ -803,6 +803,20 @@ public sealed class Config
     public static bool IsAnalogSwitch(int code) => code == 4;
 
     /// <summary>
+    /// True when a wheel or pedal assignment restates what the instrument's own MIDI port
+    /// already sends for that control: the factory route, channel 1 at the default
+    /// number. Anything the user changed - another CC, another channel, a note - is a
+    /// genuine assignment and is never treated as a duplicate.
+    /// </summary>
+    public static bool IsFactoryAnalogRoute(int code, Mapping m)
+    {
+        if (m == null || m.Silent || m.Channel != 1) return false;
+        foreach (var (c, _, cc) in AnalogControls)
+            if (c == code) return m.Number == cc && m.Send == AnalogSendKind(code);
+        return false;
+    }
+
+    /// <summary>
     /// Every performance control is routed to the application's stable virtual output.
     /// The DAW deliberately does not open the old UltraNova WinMM input, because that
     /// driver handle is invalidated whenever an Automap host genuinely restarts.

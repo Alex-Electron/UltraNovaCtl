@@ -118,7 +118,20 @@ public sealed class AutomapEngine : IDisposable
     /// are not tracked either - they are latches, and a latch is meant to outlive both the
     /// finger and the page.
     /// </summary>
-    readonly Dictionary<Mapping, int> _heldTransient = new();
+    readonly Dictionary<Mapping, HeldSwitch> _heldTransient = new();
+
+    /// <summary>
+    /// A momentary switch caught mid-press: the route it was asserted on, copied at the
+    /// moment of the press, and the value that lets go of it. The copy matters - the user
+    /// can change the assignment's channel or number while the pedal is still down, and
+    /// the release has to reach the old route or that control stays asserted for good.
+    /// </summary>
+    readonly struct HeldSwitch
+    {
+        public readonly Mapping Route;
+        public readonly int Released;
+        public HeldSwitch(Mapping route, int released) { Route = route; Released = released; }
+    }
 
     readonly object _switchLock = new();
 
@@ -508,6 +521,10 @@ public sealed class AutomapEngine : IDisposable
                 SendToOutputs(o => o.Send((byte)(0x80 | note.Channel),
                     note.Number, note.ReleaseVelocity));
         }
+        // The same edit can strand a momentary CC just as it strands a note, so the
+        // name is narrower than what it does: this lets go of whatever the mapping is
+        // asserting, on the route it was asserted on.
+        ReleaseHeldSwitch(mapping);
         lock (_switchLock) _toggles[mapping] = false;
         RefreshPersistentButtonLeds();
     }
@@ -1807,14 +1824,15 @@ public sealed class AutomapEngine : IDisposable
     /// appears on both paths is not sent twice.
     /// </summary>
     /// <summary>
-    /// Whether what arrives on the instrument's own MIDI port should be relayed to the
-    /// outputs - keyboard notes, polyphonic pressure, and the wheels, pedals and channel
-    /// aftertouch that ride the same port. Pure, so the decision can be checked without a
-    /// lock, an instrument or a plug-in.
+    /// Whether to relay what a DAW could already be getting from the instrument's own
+    /// MIDI port: keyboard notes and polyphonic pressure, and the wheels, pedals and
+    /// channel aftertouch on their factory route. Pure, so the decision can be checked
+    /// without a lock, an instrument or a plug-in.
     ///
-    /// Deliberately does NOT cover the Automap analog stream: those are per-page
-    /// assignments the user made on purpose, and nobody else can read pins 16/18, so they
-    /// never arrive at a DAW twice.
+    /// Wheels and pedals arrive here by two paths - the Automap analog stream and Port 1 -
+    /// and the rule is applied to the assignment, not the path, so it holds whichever one
+    /// delivered the movement. An assignment the user changed is never suppressed: it is
+    /// not something the instrument's port sends, so it cannot be a duplicate.
     /// </summary>
     internal bool InstrumentPortRelayActive(bool nativeEditorOpen) =>
         Config.ForwardKeyboardNotes
@@ -1826,6 +1844,13 @@ public sealed class AutomapEngine : IDisposable
     /// </summary>
     internal static int[] LampsToShow(IEnumerable<int> wanted) =>
         wanted.OrderBy(c => c).Take(PanelLamps.MaxAtOnce).ToArray();
+
+    /// <summary>
+    /// Whether this wheel or pedal movement is a duplicate to hold back: the relay is off
+    /// and the assignment merely restates the instrument's own message for that control.
+    /// </summary>
+    internal static bool AnalogSendSuppressed(int code, Mapping m, bool relayActive) =>
+        !relayActive && Config.IsFactoryAnalogRoute(code, m);
 
     /// <summary>True while the native editor's lock was last seen held.</summary>
     public bool NativeEditorOpen => _nativeEditorOpen;
@@ -1905,9 +1930,6 @@ public sealed class AutomapEngine : IDisposable
         else if (kind == 0xB0)
             code = d1 switch { 1 => 1, 11 => 3, 64 => 4, _ => -1 };
         if (code < 0) return;
-        // Same class as the keyboard: these ride the instrument's own port, so a DAW
-        // listening to that port already has them and relaying is duplication.
-        if (!InstrumentPortRelayActive(NativeEditorDriving())) return;
         lock (_analogLock)
         {
             if (Environment.TickCount64 - _analogStreamMs.GetValueOrDefault(code) < 80)
@@ -1937,6 +1959,10 @@ public sealed class AutomapEngine : IDisposable
         Mapping send = null;
         int sendValue = 0;
         bool? switchPressed = null;
+
+        // Decided up front, before any lock: this probes a kernel object at most once a
+        // second and may log, and neither belongs under _analogLock.
+        bool relay = InstrumentPortRelayActive(NativeEditorDriving());
 
         lock (_analogLock)
         {
@@ -1970,6 +1996,11 @@ public sealed class AutomapEngine : IDisposable
                     catchAt = pk.CatchScaled;
             }
         }
+
+        // With the relay off, a wheel or pedal that merely restates the instrument's own
+        // message is a duplicate of what the DAW already gets from the instrument's port,
+        // whichever of our two paths delivered it. An assignment the user changed is not.
+        if (send != null && AnalogSendSuppressed(code, send, relay)) send = null;
 
         if (send != null)
         {
@@ -2299,7 +2330,7 @@ public sealed class AutomapEngine : IDisposable
         {
             lock (_switchLock)
             {
-                if (pressed) _heldTransient[m] = Math.Clamp(transient.Value, 0, 127);
+                if (pressed) _heldTransient[m] = new HeldSwitch(m.Clone(), Math.Clamp(transient.Value, 0, 127));
                 else _heldTransient.Remove(m);
             }
         }
@@ -2318,16 +2349,33 @@ public sealed class AutomapEngine : IDisposable
     /// </summary>
     public int ReleaseHeldSwitches()
     {
-        KeyValuePair<Mapping, int>[] held;
+        HeldSwitch[] held;
         lock (_switchLock)
         {
             if (_heldTransient.Count == 0) return 0;
-            held = _heldTransient.ToArray();
+            held = _heldTransient.Values.ToArray();
             _heldTransient.Clear();
         }
         // Outside the lock: each of these is a send. See OnAnalog for why that matters.
-        foreach (var entry in held) SendMapped(entry.Key, entry.Value, noteOn: false);
+        // Sent on the route captured at the press, not on the mapping as it stands now.
+        foreach (var h in held) SendMapped(h.Route, h.Released, noteOn: false);
         return held.Length;
+    }
+
+    /// <summary>Let go of one mapping's momentary assertion, if it has one.</summary>
+    public void ReleaseHeldSwitch(Mapping mapping)
+    {
+        if (mapping == null) return;
+        HeldSwitch h;
+        lock (_switchLock)
+            if (!_heldTransient.Remove(mapping, out h)) return;
+        SendMapped(h.Route, h.Released, noteOn: false);
+    }
+
+    /// <summary>The route a held switch was pressed on, for the regression checks.</summary>
+    internal Mapping HeldRouteOf(Mapping mapping)
+    {
+        lock (_switchLock) return _heldTransient.TryGetValue(mapping, out var h) ? h.Route : null;
     }
 
     void SendMapped(Mapping m, int value, bool? noteOn = null)

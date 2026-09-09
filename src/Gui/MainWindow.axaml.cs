@@ -1462,8 +1462,11 @@ public partial class MainWindow : Window
         int mi = _selMode.SelectedIndex;
         m.Mode = mi >= 0 && mi < kinds.Length ? kinds[mi].value
                : (SelectionIsSwitch ? "momentary" : "normal");
-        if (oldSend == "note" && (m.Send != "note" || m.Mode != oldMode
-            || m.Channel != oldChannel || m.Number != oldNumber))
+        // Whatever this mapping was asserting - a note, or a momentary CC held down right
+        // now - was asserted on the OLD route. Let go of it there before the new route
+        // takes over, or the old control stays on with nothing left that knows about it.
+        if (m.Send != oldSend || m.Mode != oldMode
+            || m.Channel != oldChannel || m.Number != oldNumber)
             _engine.ReleaseNote(m);
         if (int.TryParse(_selPoints.Text, out int pts)) m.Points = Math.Clamp(pts, 2, 128);
         if (_selected is AnalogTile analogSel && !analogSel.IsSwitch)

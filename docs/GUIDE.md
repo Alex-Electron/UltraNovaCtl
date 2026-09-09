@@ -108,6 +108,17 @@ list, not about the device: we read the keyboard from the instrument's private P
 and never touch the public WinMM `UltraNova` pair, which stays available to the native
 UltraNova Editor, the Librarian, and any other DAW at the same time.
 
+**With Novation's own UltraNova Editor loaded** the picture flips. That plug-in turns the
+instrument's Local control off and expects the DAW to sit in the middle - listening to the
+direct `UltraNova` input and sending back to the instrument so the keyboard sounds. In that
+arrangement our relay would hand the DAW every note a second time, so it pauses by itself
+while the plug-in holds the instrument (the log says so) and resumes when the plug-in is
+removed. Enable the direct `UltraNova` input for that session, and route the track's output
+to the instrument, or you will hear nothing. Both behaviours sit under **Forward keyboard &
+wheels** and **pause for native editor** in the KEYBOARD, WHEELS & PEDALS row. Wheel and
+pedal assignments you have changed from the factory route are yours and are never held
+back - only the ones that would merely repeat what the instrument's port already sends.
+
 Turn encoder 1. The DAW should show CC 21 moving.
 
 That is the default map: the ten encoders on **channel 1**, CC 21–30 — the eight on 21–28,
@@ -372,6 +383,6 @@ busy for a while, and that looks exactly like the DAW deciding to stop listening
 | The DAW stopped receiving after restarting this program | The program automatically retries a busy or stale MIDI output. It should recover within a few seconds; **Reinit** remains available for a manual check. |
 | loopMIDI port is missing from the DAW | The DAW was started before the port existed. Restart the DAW. |
 | Nothing from the mod wheel or the pedals | They are silent until the host enables them. That happens automatically on connect; press **Reinit** if it did not. |
-| Encoders work, notes do not | Use `loopMIDI Port` as the track input. UltraNovaCtl forwards the keyboard, wheels, pedals and aftertouch there; the direct `UltraNova` input should be disabled because its old-driver handle does not survive an Automap-host restart. |
+| Encoders work, notes do not | Without Novation's editor: use `loopMIDI Port` as the track input - the keyboard, wheels, pedals and aftertouch are relayed there - and leave the direct `UltraNova` input off, or every note arrives twice. With Novation's editor loaded: the relay pauses on purpose; enable the direct `UltraNova` input and route the track back to the instrument, because the plug-in has turned Local off. |
 | The synth is stuck in Automap mode | Press **SYNTH** on the instrument. It cannot be done from software — the stock Automap could not do it either. |
 | A DIN-connected synth does not respond | The UltraNova's DIN sockets are not bridged to USB. Its own guide says so plainly: it is not a computer MIDI interface. Use a separate USB-MIDI interface. |

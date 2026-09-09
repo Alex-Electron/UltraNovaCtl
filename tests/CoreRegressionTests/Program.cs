@@ -36,6 +36,8 @@ static class Program
             ("a held momentary switch is released on a page change", AHeldMomentarySwitchIsReleasedOnAPageChange),
             ("the instrument-port relay respects the setting and the native editor", KeyboardForwardingRespectsSettingAndNativeEditor),
             ("the lock probe reads without creating", TheLockProbeReadsWithoutCreating),
+            ("a held switch keeps the route it was pressed on", AHeldSwitchKeepsTheRouteItWasPressedOn),
+            ("factory-routed wheels are held back with the relay off", FactoryRoutedWheelsAreHeldBackWithTheRelayOff),
             ("latched lamps stay within the rail budget", LatchedLampsStayWithinTheRailBudget),
             ("releasing notes without a connection is harmless", ReleaseWithoutConnectionIsHarmless),
             ("reopening outputs reports failure instead of throwing", ReopenOutputsReportsFailure),
@@ -317,7 +319,7 @@ static class Program
         byte[]? before = null;
         if (withLocalOff)
         {
-            Console.WriteLine("-- bracketing the probe with Local Off (CC 122 = 0) --");
+            Console.WriteLine("-- bracketing the probe with Local Off (CC 122 = 33) --");
             before = Status("before");
             SetLocal(false);
             Status("with Local Off");
@@ -366,8 +368,12 @@ static class Program
         if (withLocalOff)
         {
             Console.WriteLine();
-            Console.WriteLine("-- restoring Local On (CC 122 = 127) --");
-            SetLocal(true);
+            // Put it back the way it was found, not blindly On: the owner may have had
+            // Local off on purpose. Unknown before-state defaults to On - an audible
+            // keyboard is the safer mistake.
+            bool wasOn = before == null || (before[12] & 1) == 1;
+            Console.WriteLine($"-- restoring Local {(wasOn ? "On (CC 122 = 99)" : "Off (CC 122 = 33)")} --");
+            SetLocal(wasOn);
             var after = Status("after");
             if (before != null && after != null)
                 Console.WriteLine(before[12] == after[12]
@@ -914,6 +920,60 @@ static class Program
         Equal(30, all[^1], "sorted");
 
         Equal(0, AutomapEngine.LampsToShow(Array.Empty<int>()).Length, "nothing wanted, nothing lit");
+    }
+
+    /// <summary>
+    /// A held momentary switch remembers the route it was pressed on. The user can change
+    /// the assignment's channel or number while the pedal is still down; the release must
+    /// reach the old route, or that control stays asserted with nothing left to clear it.
+    /// Found by review, not on the instrument - the same family as the stuck sustain.
+    /// </summary>
+    static void AHeldSwitchKeepsTheRouteItWasPressedOn()
+    {
+        using var engine = new AutomapEngine();
+        var pedal = new Mapping { Send = "cc", Channel = 1, Number = 64, Mode = "momentary", From = 0, To = 127 };
+        engine.SendSwitch(pedal, pressed: true);
+
+        pedal.Channel = 9;
+        pedal.Number = 80;
+
+        var route = engine.HeldRouteOf(pedal);
+        True(route != null, "still held after the edit");
+        Equal(1, route!.Channel, "release goes to the channel it was pressed on");
+        Equal(64, route.Number, "and to the number it was pressed on");
+
+        engine.ReleaseNote(pedal);                       // what the GUI calls on a routing edit
+        True(engine.HeldRouteOf(pedal) == null, "the edit released it");
+        Equal(0, engine.ReleaseHeldSwitches(), "and nothing is left for the page change");
+    }
+
+    /// <summary>
+    /// With the relay off, a wheel or pedal on its factory route is a duplicate of what the
+    /// DAW already gets from the instrument's own port and is held back - whichever of the
+    /// two internal paths delivered it. An assignment the user changed is not a duplicate
+    /// and keeps going. The first cut gated only one of the two paths, which changed
+    /// almost nothing: the other path is the one that normally wins.
+    /// </summary>
+    static void FactoryRoutedWheelsAreHeldBackWithTheRelayOff()
+    {
+        var (mod, _, modCc) = Config.AnalogControls[0];
+        var factory = new Mapping { Send = Config.AnalogSendKind(mod), Channel = 1, Number = modCc, Mode = "normal" };
+        var custom  = new Mapping { Send = "cc", Channel = 1, Number = 74, Mode = "normal" };
+        var otherCh = new Mapping { Send = Config.AnalogSendKind(mod), Channel = 2, Number = modCc, Mode = "normal" };
+
+        True(Config.IsFactoryAnalogRoute(mod, factory), "the default assignment is the factory route");
+        True(!Config.IsFactoryAnalogRoute(mod, custom), "another CC is not");
+        True(!Config.IsFactoryAnalogRoute(mod, otherCh), "another channel is not");
+        True(!Config.IsFactoryAnalogRoute(mod, new Mapping { Send = "none" }), "silent is not");
+
+        Equal(true,  AutomapEngine.AnalogSendSuppressed(mod, factory, relayActive: false), "factory route, relay off: held back");
+        Equal(false, AutomapEngine.AnalogSendSuppressed(mod, factory, relayActive: true),  "factory route, relay on: goes");
+        Equal(false, AutomapEngine.AnalogSendSuppressed(mod, custom,  relayActive: false), "custom route, relay off: still goes");
+
+        // Sustain's factory route is a CC too, so the pedal follows the same rule.
+        var (sus, _, susCc) = Config.AnalogControls[3];
+        var pedal = new Mapping { Send = "cc", Channel = 1, Number = susCc, Mode = "momentary" };
+        Equal(true, AutomapEngine.AnalogSendSuppressed(sus, pedal, relayActive: false), "factory sustain, relay off: held back");
     }
 
     static void ReleaseWithoutConnectionIsHarmless()

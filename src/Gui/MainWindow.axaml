@@ -381,7 +381,7 @@
                       VerticalAlignment="Center">
             <CheckBox Name="ForwardKeysBox" Content="Forward keyboard &amp; wheels" FontSize="11"
                       IsChecked="True"
-                      ToolTip.Tip="Relay what arrives on the instrument's own MIDI port - keyboard notes, polyphonic pressure, wheels, pedals and channel aftertouch - to the MIDI output, so a DAW fed from here can play it. Turn it off when the DAW already listens to the instrument's own port, or every note arrives twice."/>
+                      ToolTip.Tip="Relay what a DAW could already get from the instrument's own port: keyboard notes and pressure, and wheels, pedals and aftertouch on their factory route. Turn it off when the DAW listens to the instrument's own port, or it gets each of those twice. Wheel and pedal assignments you have changed are yours and keep going either way."/>
             <CheckBox Name="PauseForEditorBox" Content="pause for native editor" FontSize="11"
                       IsChecked="True"
                       ToolTip.Tip="Novation's own UltraNova Editor takes Local off and expects the DAW to listen to the instrument's own port and send back to it. Forwarding on top of that gives the DAW every note twice. Detected from the editor's own lock, without taking it."/>
