@@ -239,7 +239,9 @@ internal static class Program
                 ? args[i + 1] : "Port 2";
             int secs = 30;
             if (i + 2 < args.Length && int.TryParse(args[i + 2], out int s2)) secs = s2;
-            return EditorPort.Probe(path, port, secs);
+            int poll = 0;
+            if (i + 3 < args.Length && int.TryParse(args[i + 3], out int s3)) poll = s3;
+            return EditorPort.Probe(path, port, secs, poll);
         }
 
         for (int i = 0; i < args.Length; i++)

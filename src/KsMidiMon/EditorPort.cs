@@ -32,6 +32,15 @@ internal static class EditorPort
     static readonly byte[] TransportDisable = { 0xF0, 0x01, 0x00, 0x00, 0xF7 };
 
     static int _total, _dumps;
+    static byte[]? _lastDump;
+    static readonly object _dumpLock = new();
+
+    /// <summary>
+    /// Table offsets in ultranova-layout-params.json count from message byte 13, so a
+    /// changed message byte i is the parameter at offset i-13. Established in
+    /// docs/PATCH-PROTOCOL.ru.md section 5 and confirmed on the instrument.
+    /// </summary>
+    const int OffsetBase = 13;
 
     /// <summary>A 14-byte command in the UltraNova patch protocol.</summary>
     static byte[] Command(byte cmd, byte ctrl, byte bank = 0, byte prog = 0) => new byte[]
@@ -39,7 +48,7 @@ internal static class EditorPort
         0xF0, 0x00, 0x20, 0x29, 0x03, 0x01, 0x7F, cmd, ctrl, 0x00, 0x00, bank, prog, 0xF7
     };
 
-    public static int Probe(string filterPath, string portName, int seconds)
+    public static int Probe(string filterPath, string portName, int seconds, int pollSeconds = 0)
     {
         IntPtr filter = Ks.CreateFileW(filterPath, Ks.GENERIC_READ | Ks.GENERIC_WRITE,
             Ks.FILE_SHARE_READ | Ks.FILE_SHARE_WRITE, IntPtr.Zero,
@@ -108,7 +117,21 @@ internal static class EditorPort
             Send(wr, Command(0x40, 0x00), "0x40 - дай текущий буфер редактирования");
 
             Console.WriteLine($"\nслушаю {seconds} с - покрути ручку и смени патч\n");
-            Thread.Sleep(seconds * 1000);
+            if (pollSeconds <= 0) Thread.Sleep(seconds * 1000);
+            else
+            {
+                // Re-ask for the edit buffer on a timer. Two things get settled at once:
+                // whether the instrument pushes anything unsolicited on this port, and
+                // whether polling alone is enough to follow edits made on the panel.
+                Console.WriteLine($"(опрос буфера каждые {pollSeconds} с)");
+                var until = DateTime.UtcNow.AddSeconds(seconds);
+                while (DateTime.UtcNow < until)
+                {
+                    Thread.Sleep(pollSeconds * 1000);
+                    if (DateTime.UtcNow >= until) break;
+                    Ks.WriteMidi(wr, Command(0x40, 0x00), out _);
+                }
+            }
             stop.Set();
             Thread.Sleep(200);
 
@@ -207,9 +230,13 @@ internal static class EditorPort
                 var sx = pending.GetRange(0, end + 1).ToArray();
                 pending.RemoveRange(0, end + 1);
                 _total++;
-                if (sx.Length == 526) _dumps++;
-                Console.WriteLine($"RX SysEx {sx.Length} байт: {Hex(sx, 16)}" +
-                                  (sx.Length == 526 ? "  <-- ПАТЧ-ДАМП" : ""));
+                if (sx.Length == 526)
+                {
+                    _dumps++;
+                    Console.WriteLine($"RX ПАТЧ-ДАМП 526 байт: {Hex(sx, 14)}");
+                    ReportChanges(sx);
+                }
+                else Console.WriteLine($"RX SysEx {sx.Length} байт: {Hex(sx, 16)}");
             }
             else if (pending[0] >= 0x80)
             {
@@ -230,6 +257,34 @@ internal static class EditorPort
                 pending.RemoveAt(0);
                 _total++;
             }
+        }
+    }
+
+    /// <summary>
+    /// Compare a dump with the previous one and name the bytes that moved. Header bytes
+    /// carry the bank and slot, so they are reported apart from parameter data.
+    /// </summary>
+    static void ReportChanges(byte[] dump)
+    {
+        lock (_dumpLock)
+        {
+            var prev = _lastDump;
+            _lastDump = dump;
+            if (prev == null) { Console.WriteLine("    (первый дамп - база для сравнения)"); return; }
+            if (prev.Length != dump.Length) { Console.WriteLine("    (другая длина, не сравниваю)"); return; }
+
+            int changes = 0;
+            for (int i = 0; i < dump.Length; i++)
+            {
+                if (prev[i] == dump[i]) continue;
+                changes++;
+                if (changes > 24) continue;
+                string where = i < OffsetBase ? $"заголовок, байт {i}" : $"смещение {i - OffsetBase}";
+                Console.WriteLine($"    {where}: {prev[i]} -> {dump[i]}");
+            }
+            if (changes == 0) Console.WriteLine("    без изменений");
+            else if (changes > 24) Console.WriteLine($"    ... и ещё {changes - 24} байт");
+            else Console.WriteLine($"    изменившихся байт: {changes}");
         }
     }
 
