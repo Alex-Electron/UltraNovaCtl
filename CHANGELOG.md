@@ -36,6 +36,12 @@
   Reading is strict about shape and lenient about neighbours - a status reply or a stray
   message in the stream is counted and skipped, not fatal - and writing goes through a
   sibling temporary so an interrupted save never leaves half a patch where a good one was.
+- `PatchSession` keeps the draft in step with the instrument under the plan's rules. A
+  patch that arrives becomes the draft only if the draft is clean; a dirty draft is the
+  user's work, so the arrival is held and reported and the caller decides. Nothing the
+  instrument reports is ever sent back to it. Following the panel works the way the native
+  plug-in does: a selection or an edit arms one poll for the edit buffer a moment later,
+  and a run of selections or a swept knob yields one request after the last of them.
 - New engine events for what arrives that way: a whole patch, a status reply carrying
   firmware and Local Control, a parameter edited elsewhere, and a patch selected on the
   panel. Patch selection is sent as two data bytes against one NRPN, bank then slot, and

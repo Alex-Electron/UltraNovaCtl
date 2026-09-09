@@ -73,6 +73,13 @@ static class Program
             ("a bank is one hundred and twenty-eight", ABankIsOneHundredAndTwentyEight),
             ("writing refuses what is not a patch", WritingRefusesWhatIsNotAPatch),
             ("writing is atomic", WritingIsAtomic),
+            ("an arriving patch becomes the draft", AnArrivingPatchBecomesTheDraft),
+            ("a dirty draft is never overwritten unasked", ADirtyDraftIsNeverOverwrittenUnasked),
+            ("a panel selection polls once after a pause", APanelSelectionPollsOnceAfterAPause),
+            ("a panel edit polls and is never sent back", APanelEditPollsAndIsNeverSentBack),
+            ("following can be switched off and disposal stops it", FollowingCanBeSwitchedOffAndDisposalStopsIt),
+            ("loading from a file starts a draft", LoadingFromAFileStartsADraft),
+            ("a disposed session is not kept alive by the engine", ADisposedSessionIsNotKeptAliveByTheEngine),
             ("releasing notes without a connection is harmless", ReleaseWithoutConnectionIsHarmless),
             ("reopening outputs reports failure instead of throwing", ReopenOutputsReportsFailure),
             ("an unopened output is not usable", UnopenedOutputIsNotUsable),
@@ -1939,6 +1946,195 @@ static class Program
                   "and the good file on disk is untouched by it");
         }
         finally { try { Directory.Delete(dir, true); } catch { } }
+    }
+
+
+    // ---- patch session -----------------------------------------------------
+    //
+    // The rules between the instrument and the draft. Driven through the engine's own
+    // dispatch seam, so what is exercised is the real event path, not a stand-in.
+
+    static (AutomapEngine engine, PatchSession session, List<int> requests) Session()
+    {
+        var engine = new AutomapEngine();
+        engine.Config.OutputPort = "";
+        var session = new PatchSession(engine);
+        var requests = new List<int>();
+        session.Requester = () => { lock (requests) requests.Add(1); return true; };
+        return (engine, session, requests);
+    }
+
+    static byte[] NamedDump(string name, byte slot = 0)
+    {
+        var d = SyntheticDump();
+        d[12] = slot;
+        for (int i = 0; i < PatchProtocol.NameLength; i++)
+            d[PatchProtocol.MessageIndex(PatchProtocol.NameOffset + i)] = (byte)(i < name.Length ? name[i] : ' ');
+        return d;
+    }
+
+    static void AnArrivingPatchBecomesTheDraft()
+    {
+        var (engine, session, _) = Session();
+        using (engine) using (session)
+        {
+            PatchModel? loaded = null;
+            session.PatchLoaded += (_, m) => loaded = m;
+            True(session.Current == null, "there is no draft before anything arrives");
+
+            engine.DispatchEditorSysEx(NamedDump("First"));
+            True(loaded != null, "the arrival is announced");
+            Equal("First", session.Current!.Name, "and is now the draft");
+
+            // A clean draft is simply replaced by the next arrival.
+            engine.DispatchEditorSysEx(NamedDump("Second"));
+            Equal("Second", session.Current!.Name, "a clean draft follows the instrument");
+            True(!session.HasPending, "with nothing held back");
+        }
+    }
+
+    static void ADirtyDraftIsNeverOverwrittenUnasked()
+    {
+        var (engine, session, _) = Session();
+        using (engine) using (session)
+        {
+            engine.DispatchEditorSysEx(NamedDump("Mine"));
+            session.Current![79] = (byte)(session.Current[79] ^ 0x40);   // the user edits
+
+            PatchEventArgs? held = null;
+            int loads = 0;
+            session.PatchHeld += (_, e) => held = e;
+            session.PatchLoaded += (_, _) => loads++;
+
+            engine.DispatchEditorSysEx(NamedDump("Theirs"));
+            True(held != null, "the arrival is held and reported");
+            Equal("Theirs", held!.Name, "naming what arrived");
+            Equal(0, loads, "and nothing was loaded over the user's work");
+            Equal("Mine", session.Current!.Name, "the dirty draft is untouched");
+            True(session.HasPending, "the held patch is available");
+
+            session.KeepDraft();
+            True(!session.HasPending, "keeping the draft forgets the held patch");
+            Equal("Mine", session.Current!.Name, "and the draft stays");
+
+            engine.DispatchEditorSysEx(NamedDump("Again"));
+            True(session.DiscardDraftAndLoadPending(), "discarding takes the held patch");
+            Equal("Again", session.Current!.Name, "which is now the draft");
+            Equal(1, loads, "announced as a load");
+            True(!session.DiscardDraftAndLoadPending(), "with nothing left to take");
+        }
+    }
+
+    static void APanelSelectionPollsOnceAfterAPause()
+    {
+        var (engine, session, requests) = Session();
+        using (engine) using (session)
+        {
+            session.FollowDelayMs = 40;
+            PatchSelectedEventArgs? seen = null;
+            session.InstrumentSelected += (_, e) => seen = e;
+
+            // Three quick selections, as a hand flicking through patches produces.
+            foreach (byte slot in new byte[] { 10, 11, 12 })
+            {
+                engine.DispatchEditorChannelMessage(0xB1, 99, 63);
+                engine.DispatchEditorChannelMessage(0xB1, 98, 1);
+                engine.DispatchEditorChannelMessage(0xB1, 6, 2);
+                engine.DispatchEditorChannelMessage(0xB1, 38, slot);
+            }
+            True(seen != null, "the selection is reported straight away");
+            Equal(12, seen!.Program, "the last one wins");
+            lock (requests) Equal(0, requests.Count, "but nothing is requested yet");
+
+            Thread.Sleep(200);
+            lock (requests) Equal(1, requests.Count, "one request after the pause, not three");
+        }
+    }
+
+    static void APanelEditPollsAndIsNeverSentBack()
+    {
+        var (engine, session, requests) = Session();
+        using (engine) using (session)
+        {
+            session.EditFollowDelayMs = 40;
+            int edits = 0;
+            session.InstrumentEdited += (_, _) => edits++;
+
+            for (byte v = 60; v < 90; v++) engine.DispatchEditorChannelMessage(0xB1, 74, v);
+            Equal(30, edits, "every edit is reported for the interface to show");
+
+            Thread.Sleep(200);
+            lock (requests) Equal(1, requests.Count, "a swept knob produces one poll, after it stops");
+        }
+    }
+
+    static void FollowingCanBeSwitchedOffAndDisposalStopsIt()
+    {
+        var (engine, session, requests) = Session();
+        using (engine)
+        {
+            session.FollowDelayMs = 30;
+            session.FollowPanel = false;
+            engine.DispatchEditorChannelMessage(0xB1, 99, 63);
+            engine.DispatchEditorChannelMessage(0xB1, 98, 1);
+            engine.DispatchEditorChannelMessage(0xB1, 6, 2);
+            engine.DispatchEditorChannelMessage(0xB1, 38, 5);
+            Thread.Sleep(120);
+            lock (requests) Equal(0, requests.Count, "with following off, a selection requests nothing");
+
+            session.FollowPanel = true;
+            engine.DispatchEditorChannelMessage(0xB1, 38, 6);
+            session.Dispose();                                   // before the timer fires
+            Thread.Sleep(120);
+            lock (requests) Equal(0, requests.Count, "a disposed session fires no request");
+
+            int loads = 0;
+            session.PatchLoaded += (_, _) => loads++;
+            engine.DispatchEditorSysEx(NamedDump("Late"));
+            Equal(0, loads, "and hears nothing more from the engine");
+        }
+    }
+
+    static void ADisposedSessionIsNotKeptAliveByTheEngine()
+    {
+        // The engine outlives sessions - one engine, many editor windows over a day. If
+        // disposing a session left it subscribed, the engine would hold every dead session
+        // forever and keep delivering to them. The disposed flag hides that from a
+        // behavioural check, so this asks the garbage collector instead.
+        using var engine = new AutomapEngine();
+        engine.Config.OutputPort = "";
+        var weak = MakeAndDisposeSession(engine);
+        for (int i = 0; i < 3 && weak.IsAlive; i++)
+        {
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+        }
+        True(!weak.IsAlive, "a disposed session is unreachable from the engine");
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    static WeakReference MakeAndDisposeSession(AutomapEngine engine)
+    {
+        var session = new PatchSession(engine);
+        session.Dispose();
+        return new WeakReference(session);
+    }
+
+    static void LoadingFromAFileStartsADraft()
+    {
+        var (engine, session, _) = Session();
+        using (engine) using (session)
+        {
+            int loads = 0;
+            session.PatchLoaded += (_, _) => loads++;
+            session.Load(PatchModel.FromDump(NamedDump("From disk")));
+            Equal(1, loads, "loading announces the draft");
+            Equal("From disk", session.Current!.Name, "and it is current");
+
+            bool threw = false;
+            try { session.Load(null!); } catch (ArgumentNullException) { threw = true; }
+            True(threw, "loading nothing is refused");
+        }
     }
 
     static void ReleaseWithoutConnectionIsHarmless()
