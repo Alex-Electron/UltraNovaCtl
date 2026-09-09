@@ -58,6 +58,22 @@ internal static class EditorPort
 
             uint readPin = uint.MaxValue, writePin = uint.MaxValue;
             Guid sub = Guid.Empty;
+
+            // "read:write" names an explicit pin pair. Port 1 is published twice, so a
+            // name match alone cannot say whether the public pair or the private one is
+            // wanted, and the private pair is the interesting one.
+            int colon = portName.IndexOf(':');
+            if (colon > 0 && uint.TryParse(portName.Substring(0, colon), out uint rp)
+                          && uint.TryParse(portName.Substring(colon + 1), out uint wp))
+            {
+                foreach (var p in pins)
+                {
+                    if (p.Ranges.Count == 0) continue;
+                    if (p.Id == rp) { readPin = rp; sub = p.Ranges[0].SubFormat; }
+                    if (p.Id == wp) { writePin = wp; sub = p.Ranges[0].SubFormat; }
+                }
+            }
+            else
             foreach (var p in pins)
             {
                 if (!p.IsMusic || p.Ranges.Count == 0) continue;
