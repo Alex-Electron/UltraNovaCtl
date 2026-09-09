@@ -88,7 +88,16 @@ internal static class Program
         }
         Console.WriteLine("filter opened");
 
-        IntPtr pin = Ks.CreateMidiPin(filter, pinId, forWriting: false, out uint status);
+        // Take the subformat from the pin's own dataranges. The private Novation ports
+        // (Port 1 pins 6/10, Port 2 pins 12/14) advertise 7b80f763-..., and Automap
+        // advertises 39d30b88-...; passing the standard MIDI subformat for those makes
+        // KsCreatePin answer with no match, which is what "NTSTATUS 0x00000491" was.
+        Guid sub = Ks.KSDATAFORMAT_SUBTYPE_MIDI;
+        foreach (var info in Pins.Enumerate(filter, out _))
+            if (info.Id == pinId && info.Ranges.Count > 0) { sub = info.Ranges[0].SubFormat; break; }
+        Console.WriteLine($"subformat: {sub}");
+
+        IntPtr pin = Ks.CreateMidiPin(filter, pinId, forWriting: false, sub, out uint status);
         if (pin == IntPtr.Zero)
         {
             Console.WriteLine($"KsCreatePin failed, NTSTATUS 0x{status:X8}, win32 {Marshal.GetLastWin32Error()}");
