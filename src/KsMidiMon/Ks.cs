@@ -140,6 +140,16 @@ internal static class Ks
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern bool CloseHandle(IntPtr hObject);
 
+    /// <summary>
+    /// Cancel outstanding IO on a handle. A read on a silent KS pin blocks in the
+    /// driver indefinitely, so closing without this can leave the process alive with
+    /// the pin still pending - which is exactly what happened to this tool on Port 2,
+    /// and it then held its own executable and broke the next build. The engine has
+    /// done this since 1.2.1; the research tool needed it too.
+    /// </summary>
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool CancelIoEx(IntPtr hFile, IntPtr lpOverlapped);
+
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern bool DeviceIoControl(
         IntPtr hDevice, uint dwIoControlCode,

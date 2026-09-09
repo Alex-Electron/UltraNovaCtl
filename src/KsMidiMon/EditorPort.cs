@@ -165,6 +165,10 @@ internal static class EditorPort
 
     static void Close(IntPtr pin)
     {
+        // The reader may be parked in a blocking DeviceIoControl on a quiet port.
+        // Cancel it first; the thread is a background one, but the pin must not be
+        // wound down with IO still pending.
+        Ks.CancelIoEx(pin, IntPtr.Zero);
         foreach (uint state in new[] { Ks.KSSTATE_PAUSE, Ks.KSSTATE_ACQUIRE, Ks.KSSTATE_STOP })
             Ks.SetPinState(pin, state, out _);
         Ks.CloseHandle(pin);

@@ -56,10 +56,15 @@ internal static class Pins
 
         /// <summary>
         /// From KSPROPERTY_PIN_CINSTANCES: how many instances of this pin may exist and
-        /// how many exist right now. The current count is the useful one - it says who
-        /// is holding the pin. Run the dump with the native plug-in loaded and again
-        /// with it unloaded, and the pin whose count moves is the one it uses. That is
-        /// how to find the editor's port without guessing at protocol.
+        /// how many exist right now.
+        ///
+        /// The intent was to find which pins the native editor holds by dumping with it
+        /// loaded and again unloaded. That does not work on this driver: PossibleCount
+        /// comes back as -1, meaning unlimited, but CurrentCount is always zero.
+        /// Verified by control experiment - with pin 14 open and running from this very
+        /// process, its count still read zero. So a zero here says nothing about who
+        /// holds the pin. Kept because the value is cheap to display and because leaving
+        /// it in with this warning beats having someone re-derive the dead end.
         /// </summary>
         public uint PossibleInstances = uint.MaxValue;
         public uint CurrentInstances = uint.MaxValue;

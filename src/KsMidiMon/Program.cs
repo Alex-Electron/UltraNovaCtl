@@ -119,6 +119,19 @@ internal static class Program
         IntPtr header = Marshal.AllocHGlobal(headerSize);
 
         DateTime end = DateTime.Now.AddSeconds(seconds);
+
+        // A read on a pin that never sends blocks inside the driver, so the loop below
+        // would never get back to its own clock. Port 2 does exactly that: it opens,
+        // runs, and stays silent. This watchdog cancels the pending read at the
+        // deadline, which is what lets the loop notice the time and exit.
+        var watchdog = new System.Threading.Thread(() =>
+        {
+            var left = end - DateTime.Now;
+            if (left > TimeSpan.Zero) System.Threading.Thread.Sleep(left);
+            Ks.CancelIoEx(pin, IntPtr.Zero);
+        }) { IsBackground = true };
+        watchdog.Start();
+
         try
         {
             while (DateTime.Now < end)
@@ -137,6 +150,7 @@ internal static class Program
                 if (!ok)
                 {
                     int err = Marshal.GetLastWin32Error();
+                    if (err == 995) break;             // ERROR_OPERATION_ABORTED: watchdog
                     if (err == 997) continue;          // ERROR_IO_PENDING
                     Console.WriteLine($"read failed, error {err}");
                     System.Threading.Thread.Sleep(50);
@@ -165,6 +179,9 @@ internal static class Program
         }
         finally
         {
+            // Unblock the reader before winding the pin down, or a silent port leaves
+            // the read pending in the driver and the process never exits.
+            Ks.CancelIoEx(pin, IntPtr.Zero);
             Ks.SetPinState(pin, Ks.KSSTATE_STOP, out _);
             Marshal.FreeHGlobal(header);
             Marshal.FreeHGlobal(buffer);
