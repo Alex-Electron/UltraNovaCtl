@@ -54,6 +54,20 @@ internal static class Pins
         public string Name = "";
         public List<Ks.KSDATAFORMAT> Ranges = new();
 
+        /// <summary>
+        /// From KSPROPERTY_PIN_CINSTANCES: how many instances of this pin may exist and
+        /// how many exist right now. The current count is the useful one - it says who
+        /// is holding the pin. Run the dump with the native plug-in loaded and again
+        /// with it unloaded, and the pin whose count moves is the one it uses. That is
+        /// how to find the editor's port without guessing at protocol.
+        /// </summary>
+        public uint PossibleInstances = uint.MaxValue;
+        public uint CurrentInstances = uint.MaxValue;
+
+        public string Busy => CurrentInstances == uint.MaxValue ? "?"
+            : PossibleInstances == uint.MaxValue ? CurrentInstances.ToString()
+            : CurrentInstances + "/" + PossibleInstances;
+
         public bool IsMusic
         {
             get
@@ -160,6 +174,15 @@ internal static class Pins
                 Communication = QueryU32(filter, COMMUNICATION, i)
             };
 
+            // KSPIN_CINSTANCES is two ULONGs: PossibleCount then CurrentCount. Asking
+            // with a 4-byte buffer is what used to fail with error 122.
+            var inst = Query(filter, CINSTANCES, i, 8, out _);
+            if (inst != null && inst.Length >= 8)
+            {
+                info.PossibleInstances = BitConverter.ToUInt32(inst, 0);
+                info.CurrentInstances = BitConverter.ToUInt32(inst, 4);
+            }
+
             var nameBuf = Query(filter, NAME, i, 0, out _);
             if (nameBuf != null && nameBuf.Length > 1)
                 info.Name = System.Text.Encoding.Unicode.GetString(nameBuf).TrimEnd('\0');
@@ -213,6 +236,7 @@ internal static class Pins
                 string music = p.IsMusic ? "  MUSIC" : "";
                 Console.WriteLine("  pin " + p.Id.ToString().PadLeft(2) + "  " +
                                   p.Flow.PadRight(15) + " comm=" + p.Comm.PadRight(7) +
+                                  " open=" + p.Busy.PadRight(5) +
                                   " ranges=" + p.Ranges.Count + music +
                                   (p.Name.Length > 0 ? "  " + p.Name : ""));
                 foreach (var r in p.Ranges)

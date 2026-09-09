@@ -230,6 +230,18 @@ internal static class Program
             if (a == "--pins") { Pins.Dump(path); return 0; }
         }
 
+        // Probe a private port the way the native editor attaches to it: transport
+        // enable, hello, ask for the edit buffer, then listen. Port 2 is the editor's.
+        for (int i = 0; i < args.Length; i++)
+        {
+            if (args[i] != "--editor-port") continue;
+            string port = i + 1 < args.Length && !args[i + 1].StartsWith("--")
+                ? args[i + 1] : "Port 2";
+            int secs = 30;
+            if (i + 2 < args.Length && int.TryParse(args[i + 2], out int s2)) secs = s2;
+            return EditorPort.Probe(path, port, secs);
+        }
+
         for (int i = 0; i < args.Length; i++)
         {
             if (args[i] != "--leds") continue;

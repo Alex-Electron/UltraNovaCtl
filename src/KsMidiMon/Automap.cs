@@ -9,10 +9,14 @@ namespace KsMidiMon;
 /// <summary>
 /// A minimal Automap server: answers the synth's handshake and draws its display.
 ///
-/// The synth exposes three MIDI ports as KS pins. Port 1 and 2 are ordinary MIDI;
-/// Port 3 carries the Automap protocol and advertises a vendor subformat, which is
-/// how we tell it apart. Everything the synth reports in Automap mode - encoders,
-/// touch, buttons - arrives on the Port 3 read pin and nowhere else.
+/// The synth exposes three MIDI ports as KS pins, and only Port 1 is published to
+/// Windows: it appears twice, once in standard MIDI for wdmaud to claim as the WinMM
+/// device and once behind a Novation subformat. Port 2 and Port 3 have no public pair
+/// at all. Port 3 carries the Automap protocol behind its own vendor subformat, which
+/// is how we tell it apart; Port 2 is the private port the native editor attaches to
+/// (see EditorPort and docs/HIDI-AND-PORTS.ru.md). Everything the synth reports in
+/// Automap mode - encoders, touch, buttons - arrives on the Port 3 read pin and
+/// nowhere else.
 /// </summary>
 internal static class Automap
 {
