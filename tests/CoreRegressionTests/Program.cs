@@ -68,6 +68,11 @@ static class Program
             ("the name is padded and truncated", TheNameIsPaddedAndTruncated),
             ("the model round-trips byte for byte", TheModelRoundTripsByteForByte),
             ("the model checksums its working bytes", TheModelChecksumsItsWorkingBytes),
+            ("a file is patches laid end to end", AFileIsPatchesLaidEndToEnd),
+            ("reading skips what is not a patch", ReadingSkipsWhatIsNotAPatch),
+            ("a bank is one hundred and twenty-eight", ABankIsOneHundredAndTwentyEight),
+            ("writing refuses what is not a patch", WritingRefusesWhatIsNotAPatch),
+            ("writing is atomic", WritingIsAtomic),
             ("releasing notes without a connection is harmless", ReleaseWithoutConnectionIsHarmless),
             ("reopening outputs reports failure instead of throwing", ReopenOutputsReportsFailure),
             ("an unopened output is not usable", UnopenedOutputIsNotUsable),
@@ -1828,6 +1833,112 @@ static class Program
         Equal(0xA01F9F20u, m.Checksum(), "an unedited model checksums like its dump");
         m[79] = (byte)(m[79] ^ 0x40);
         True(m.Checksum() != 0xA01F9F20u, "and an edit moves the checksum");
+    }
+
+
+    // ---- patch files -------------------------------------------------------
+
+    static void AFileIsPatchesLaidEndToEnd()
+    {
+        var a = SyntheticDump();
+        var b = SyntheticDump();
+        b[PatchProtocol.MessageIndex(79)] ^= 0x40;
+
+        var bytes = PatchFile.Serialize(new[] { a, b });
+        Equal(2 * PatchProtocol.DumpLength, bytes.Length, "two patches, nothing added between them");
+
+        var back = PatchFile.Parse(bytes);
+        Equal(2, back.Patches.Count, "both patches come back");
+        Equal(0, back.Skipped, "nothing was skipped");
+        Equal(0, back.TrailingBytes, "nothing was left over");
+        for (int i = 0; i < a.Length; i++)
+            if (back.Patches[0][i] != a[i]) { True(false, $"patch 1 byte {i} survived"); return; }
+        Equal(b[PatchProtocol.MessageIndex(79)], back.Patches[1][PatchProtocol.MessageIndex(79)],
+              "the second patch is the second patch");
+        True(!back.IsBank, "two patches are not a bank");
+    }
+
+    static void ReadingSkipsWhatIsNotAPatch()
+    {
+        var patch = SyntheticDump();
+        var stream = new List<byte>();
+        stream.AddRange(new byte[] { 0x90, 0x3C, 0x40 });                 // a stray note
+        stream.AddRange(StatusReply(1));                                   // a status reply
+        stream.AddRange(patch);
+        stream.AddRange(new byte[] { 0xF0, 0x7E, 0x00, 0x06, 0x01, 0xF7 }); // identity request
+        stream.AddRange(patch);
+        stream.AddRange(new byte[] { 0xF0, 0x00, 0x20, 0x29 });            // cut off mid-message
+
+        var r = PatchFile.Parse(stream.ToArray());
+        Equal(2, r.Patches.Count, "the two real patches are found");
+        Equal(2, r.Skipped, "the status reply and the identity request are counted, not fatal");
+        Equal(4, r.TrailingBytes, "the truncated tail is measured");
+
+        // A 526-byte message that is not ours is not a patch either.
+        var alien = SyntheticDump();
+        alien[3] = 0x2A;
+        var r2 = PatchFile.Parse(alien);
+        Equal(0, r2.Patches.Count, "another maker's 526 bytes are not a patch");
+        Equal(1, r2.Skipped, "and are reported as skipped");
+
+        Equal(0, PatchFile.Parse(Array.Empty<byte>()).Patches.Count, "an empty file has no patches");
+    }
+
+    static void ABankIsOneHundredAndTwentyEight()
+    {
+        var patches = new List<byte[]>();
+        for (int i = 0; i < PatchFile.BankSize; i++)
+        {
+            var d = SyntheticDump();
+            d[12] = (byte)i;
+            patches.Add(d);
+        }
+        var bytes = PatchFile.Serialize(patches);
+        Equal(67328, bytes.Length, "a bank file is 67 328 bytes, as captured from the instrument");
+        var r = PatchFile.Parse(bytes);
+        True(r.IsBank, "and reads back as a bank");
+        Equal(127, (int)PatchProtocol.SlotOf(r.Patches[127]).Program, "in slot order");
+    }
+
+    static void WritingRefusesWhatIsNotAPatch()
+    {
+        bool threw = false;
+        try { PatchFile.Serialize(new[] { SyntheticDump(), new byte[10] }); }
+        catch (ArgumentException) { threw = true; }
+        True(threw, "a malformed entry is refused rather than written into the file");
+    }
+
+    static void WritingIsAtomic()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "UltraNovaCtl-tests-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string path = Path.Combine(dir, "one.syx");
+            var first = SyntheticDump();
+            PatchFile.Write(path, first);
+            var r = PatchFile.Read(path);
+            Equal(1, r.Patches.Count, "a written patch reads back");
+            True(!File.Exists(path + ".writing"), "no temporary file is left behind");
+
+            // Overwriting goes through the same temporary and replaces the old file whole.
+            var second = SyntheticDump();
+            second[PatchProtocol.MessageIndex(79)] ^= 0x40;
+            PatchFile.Write(path, second);
+            var r2 = PatchFile.Read(path);
+            Equal(1, r2.Patches.Count, "still exactly one patch after overwrite");
+            Equal(second[PatchProtocol.MessageIndex(79)], r2.Patches[0][PatchProtocol.MessageIndex(79)],
+                  "and it is the new one");
+
+            // A refused write must not have touched the existing good file.
+            bool threw = false;
+            try { PatchFile.Write(path, new[] { new byte[5] }); } catch (ArgumentException) { threw = true; }
+            True(threw, "a bad write is refused");
+            Equal(second[PatchProtocol.MessageIndex(79)],
+                  PatchFile.Read(path).Patches[0][PatchProtocol.MessageIndex(79)],
+                  "and the good file on disk is untouched by it");
+        }
+        finally { try { Directory.Delete(dir, true); } catch { } }
     }
 
     static void ReleaseWithoutConnectionIsHarmless()

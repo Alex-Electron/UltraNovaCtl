@@ -31,6 +31,11 @@
   parameter-table offset, the way the table describes them, with the conversion to message
   index in one place. A knob swept across its range collapses to a single undo step, and a
   sweep that returns to where it started records nothing.
+- `PatchFile` reads and writes `.syx`: one patch is 526 bytes, a bank is 128 of them laid
+  end to end, exactly as the instrument emits them and as Novation's tools expect them.
+  Reading is strict about shape and lenient about neighbours - a status reply or a stray
+  message in the stream is counted and skipped, not fatal - and writing goes through a
+  sibling temporary so an interrupted save never leaves half a patch where a good one was.
 - New engine events for what arrives that way: a whole patch, a status reply carrying
   firmware and Local Control, a parameter edited elsewhere, and a patch selected on the
   panel. Patch selection is sent as two data bytes against one NRPN, bank then slot, and
