@@ -46,6 +46,27 @@ public partial class MainWindow : Window
     readonly object _lock = new();
 
     DispatcherTimer _tick, _retry;
+
+    // ---- MIDI activity lamps ----
+    StackPanel _activityLamps;
+    readonly List<ActivityLamp> _lamps = new();
+    long _learnLastMs, _learnCount;
+
+    /// <summary>One lamp: a dot, its label, and where to read its state from.</summary>
+    sealed class ActivityLamp
+    {
+        public StackPanel Root;
+        public Border Dot;
+        public string Title, What;
+        public Func<bool> Lit;
+        public Func<long> Count;
+        public Func<long> LastMs;
+        public Func<bool> Visible = () => true;
+        public long ShownCount = -1;
+    }
+
+    static readonly IBrush LampOn = new SolidColorBrush(Color.Parse("#F5A524"));
+    static readonly IBrush LampOff = new SolidColorBrush(Color.Parse("#2A2A34"));
     /// <summary>0 off, 1 assign once then switch off, 2 latched. Same as the original.</summary>
     volatile int _learnMode;
 
@@ -129,6 +150,7 @@ public partial class MainWindow : Window
         _logClear = this.FindControl<Button>("LogClearBtn");
         _logFollow = this.FindControl<CheckBox>("LogFollowBox");
         _echoLeds = this.FindControl<CheckBox>("EchoLedsBox");
+        _activityLamps = this.FindControl<StackPanel>("ActivityLamps");
         _forwardKeys = this.FindControl<CheckBox>("ForwardKeysBox");
         _pauseForEditor = this.FindControl<CheckBox>("PauseForEditorBox");
         _selPickup = this.FindControl<CheckBox>("SelPickupBox");
@@ -231,6 +253,7 @@ public partial class MainWindow : Window
         _logCopy.Click += async (_, _) => await CopyLogAsync(true);
         _logSave.Click += async (_, _) => await SaveLogAsync();
         _logClear.Click += (_, _) => ClearLog();
+        BuildActivityLamps();
         _echoLeds.IsChecked = _engine.Config.EchoButtonLeds;
         _echoLeds.IsCheckedChanged += (_, _) =>
         {
@@ -410,7 +433,7 @@ public partial class MainWindow : Window
         _engine.SelectionChanged += (_, _) => Post(ReloadPage);
 
         _tick = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) };
-        _tick.Tick += (_, _) => Paint();
+        _tick.Tick += (_, _) => { Paint(); PaintActivity(); };
         _tick.Start();
 
         // Closing the window hides it: the server carries on, and the tray icon is how
@@ -724,7 +747,12 @@ public partial class MainWindow : Window
         _inPortBox.ItemsSource = names;
         _inPortBox.SelectedIndex = 0;
         _inPortBox.SelectionChanged += (_, _) => OpenInput();
-        _midiIn.Received += (_, e) => OnMidiIn(e);
+        _midiIn.Received += (_, e) =>
+        {
+            Volatile.Write(ref _learnLastMs, Environment.TickCount64);
+            Interlocked.Increment(ref _learnCount);
+            OnMidiIn(e);
+        };
     }
 
     /// <summary>
@@ -908,6 +936,82 @@ public partial class MainWindow : Window
         Margin = new Thickness(6, 6, 6, 6),
         Background = new SolidColorBrush(Color.Parse("#24242E")),
     };
+
+    /// <summary>
+    /// The activity lamps, from one table so label, tooltip and source stay together. The
+    /// instrument talks to us on two wires and we talk back on two, and the question "is
+    /// anything flowing?" has a different answer for each - so there is a lamp per place,
+    /// not one in/out pair.
+    /// </summary>
+    void BuildActivityLamps()
+    {
+        var a = _engine.Activity;
+        (string title, string what, Func<bool> lit, Func<long> count, Func<long> last, Func<bool> visible)[] table =
+        {
+            ("Panel in",  "From the control surface: encoders, buttons, touch. The Automap channel, pins 16/18.",
+                () => a.Lit(MidiActivity.Source.PanelIn),  () => a.Count(MidiActivity.Source.PanelIn),  () => a.LastMs(MidiActivity.Source.PanelIn),  () => true),
+            ("Panel out", "To the panel: lamps, display, the handshake. What this program writes to the instrument.",
+                () => a.Lit(MidiActivity.Source.PanelOut), () => a.Count(MidiActivity.Source.PanelOut), () => a.LastMs(MidiActivity.Source.PanelOut), () => true),
+            ("Keys",      "The player's hands on the instrument's own MIDI port: notes, pressure, wheels, pedals.",
+                () => a.Lit(MidiActivity.Source.Keys),     () => a.Count(MidiActivity.Source.Keys),     () => a.LastMs(MidiActivity.Source.Keys),     () => true),
+            ("Synth",     "The instrument speaking for itself: patch dumps and status (SysEx), NRPN, program changes, its own state registers.",
+                () => a.Lit(MidiActivity.Source.Synth),    () => a.Count(MidiActivity.Source.Synth),    () => a.LastMs(MidiActivity.Source.Synth),    () => true),
+            ("DAW out",   "Everything that left through the MIDI output above - what the DAW receives.",
+                () => a.Lit(MidiActivity.Source.DawOut),   () => a.Count(MidiActivity.Source.DawOut),   () => a.LastMs(MidiActivity.Source.DawOut),   () => true),
+            ("Learn in",  "The Learn in port: what a foreign device sends while Learn is on. Shown only while learning.",
+                () => { long l = Volatile.Read(ref _learnLastMs); return l != 0 && Environment.TickCount64 - l < 150; },
+                () => Interlocked.Read(ref _learnCount), () => Volatile.Read(ref _learnLastMs), () => _learnMode != 0),
+        };
+
+        _activityLamps.Children.Clear();
+        _lamps.Clear();
+        foreach (var (title, what, lit, count, last, visible) in table)
+        {
+            var dot = new Border
+            {
+                Width = 9, Height = 9, CornerRadius = new CornerRadius(4.5),
+                Background = LampOff, VerticalAlignment = VerticalAlignment.Center,
+            };
+            var label = new TextBlock
+            {
+                Text = title, FontSize = 11, VerticalAlignment = VerticalAlignment.Center,
+                Foreground = new SolidColorBrush(Color.Parse("#8A8A9A")), Margin = new Thickness(5, 0, 0, 0),
+            };
+            var root = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+            root.Children.Add(dot);
+            root.Children.Add(label);
+            ToolTip.SetTip(root, what);
+            _activityLamps.Children.Add(root);
+            _lamps.Add(new ActivityLamp
+            {
+                Root = root, Dot = dot, Title = title, What = what,
+                Lit = lit, Count = count, LastMs = last, Visible = visible,
+            });
+        }
+    }
+
+    /// <summary>
+    /// Runs on the 16 ms tick. Cheap by design: five volatile reads and a brush swap when
+    /// something changed; the tooltip text is rebuilt only when its count moves.
+    /// </summary>
+    void PaintActivity()
+    {
+        foreach (var l in _lamps)
+        {
+            bool vis = l.Visible();
+            if (l.Root.IsVisible != vis) l.Root.IsVisible = vis;
+            if (!vis) continue;
+            var want = l.Lit() ? LampOn : LampOff;
+            if (!ReferenceEquals(l.Dot.Background, want)) l.Dot.Background = want;
+            long c = l.Count();
+            if (c != l.ShownCount)
+            {
+                l.ShownCount = c;
+                string when = c == 0 ? "nothing yet" : $"{c} message{(c == 1 ? "" : "s")}";
+                ToolTip.SetTip(l.Root, $"{l.Title} — {l.What}\n{when}.");
+            }
+        }
+    }
 
     void BuildTiles()
     {

@@ -13,6 +13,7 @@ static class Program
         if (args.Length >= 1 && args[0] == "--echo")
             return EchoProbe(args.Length > 1 && args[1] == "local-off");
         if (args.Length >= 1 && args[0] == "--locks") return LockProbe();
+        if (args.Length >= 3 && args[0] == "--watch") return WatchEdits(args);
 
         (string name, Action run)[] tests =
         {
@@ -39,6 +40,7 @@ static class Program
             ("a held switch keeps the route it was pressed on", AHeldSwitchKeepsTheRouteItWasPressedOn),
             ("factory-routed wheels are held back with the relay off", FactoryRoutedWheelsAreHeldBackWithTheRelayOff),
             ("latched lamps stay within the rail budget", LatchedLampsStayWithinTheRailBudget),
+            ("activity lamps split hands from instrument", ActivityLampsSplitHandsFromInstrument),
             ("releasing notes without a connection is harmless", ReleaseWithoutConnectionIsHarmless),
             ("reopening outputs reports failure instead of throwing", ReopenOutputsReportsFailure),
             ("an unopened output is not usable", UnopenedOutputIsNotUsable),
@@ -221,6 +223,128 @@ static class Program
                     : "   MISMATCH - the documented algorithm is wrong or incompletely specified");
             }
         }
+        return 0;
+    }
+
+    /// <summary>
+    /// Check the parameter table against the instrument. Polls the edit buffer and, each
+    /// time bytes change, says which offsets moved and what the table claims lives there -
+    /// alongside whatever the instrument's own port sent in the meantime, so one turn of a
+    /// knob checks both the byte offset and the MIDI address. Read-only.
+    ///
+    ///   --watch <outDir> <seconds> [layout-params.json]
+    /// </summary>
+    static int WatchEdits(string[] args)
+    {
+        string outDir = args[1];
+        int seconds = args.Length > 2 && int.TryParse(args[2], out int sec) ? Math.Clamp(sec, 5, 900) : 120;
+        string? tablePath = args.Length > 3 ? args[3] : null;
+        Directory.CreateDirectory(outDir);
+        using var log = new StreamWriter(System.IO.Path.Combine(outDir, "watch.log"), append: false) { AutoFlush = true };
+        void Say(string t) { Console.WriteLine(t); log.WriteLine(t); }
+
+        // What the table says lives at each offset. Offsets are taken as given - whether
+        // they count from the start of the message or from the payload is exactly what
+        // this run is meant to find out.
+        var byOffset = new Dictionary<int, List<string>>();
+        var byCc = new Dictionary<string, List<string>>();
+        if (tablePath != null && File.Exists(tablePath))
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(tablePath));
+            foreach (var p in doc.RootElement.EnumerateArray())
+            {
+                string name = p.TryGetProperty("name", out var n) ? n.GetString() ?? "?" : "?";
+                string off = "", cc = "";
+                if (p.TryGetProperty("program", out var pr) && pr.ValueKind == System.Text.Json.JsonValueKind.Object
+                    && pr.TryGetProperty("offset", out var o)) off = o.GetString() ?? "";
+                if (p.TryGetProperty("midi", out var mi) && mi.ValueKind == System.Text.Json.JsonValueKind.Object
+                    && mi.TryGetProperty("cc", out var c)) cc = c.GetString() ?? "";
+                string desc = $"{name}  [table: offset {off}, midi {cc}]";
+                if (int.TryParse(off, out int oi) && oi >= 0)
+                {
+                    if (!byOffset.TryGetValue(oi, out var l)) byOffset[oi] = l = new List<string>();
+                    l.Add(desc);
+                }
+                if (cc.Length > 0)
+                {
+                    if (!byCc.TryGetValue(cc, out var l2)) byCc[cc] = l2 = new List<string>();
+                    l2.Add(desc);
+                }
+            }
+            Say($"table: {byOffset.Count} distinct offsets, {byCc.Count} distinct MIDI addresses");
+        }
+
+        var sysex = new List<byte[]>();
+        var traffic = new List<string>();
+        using var input = new MidiIn();
+        input.Received += (_, e) =>
+        {
+            if (e.IsSysEx) { lock (sysex) sysex.Add(e.SysEx); return; }
+            // The instrument streams channel aftertouch on its own; it would drown the log.
+            if (e.Kind == 0xD0) return;
+            lock (traffic) traffic.Add(e.Describe());
+        };
+        if (!input.Open("UltraNova", out string inError)) { Console.Error.WriteLine("input failed: " + inError); return 2; }
+        using var output = new MidiOut();
+        if (!output.Open("UltraNova")) { Console.Error.WriteLine("output failed: " + output.LastError); return 2; }
+        Say($"in '{input.PortName}' / out '{output.PortName}'; watching for {seconds} s");
+
+        byte[]? Fetch()
+        {
+            lock (sysex) sysex.Clear();
+            if (!output.SendRaw(Request(0x40, 0x21))) return null;
+            var t = System.Diagnostics.Stopwatch.StartNew();
+            while (t.ElapsedMilliseconds < 900)
+            {
+                lock (sysex)
+                {
+                    var hit = sysex.FirstOrDefault(m => m.Length == 526 && m[7] == 0x00);
+                    if (hit != null) return hit;
+                }
+                Thread.Sleep(8);
+            }
+            return null;
+        }
+
+        var baseline = Fetch();
+        if (baseline == null) { Say("no edit buffer came back - is the instrument in SYNTH mode and the port free?"); return 3; }
+        File.WriteAllBytes(System.IO.Path.Combine(outDir, "watch-000.syx"), baseline);
+        Say($"baseline: '{System.Text.Encoding.ASCII.GetString(baseline, 15, 16).TrimEnd()}'  checksum 0x{PatchChecksum(baseline):X8}");
+        Say("turn one knob at a time; each change is reported as it lands");
+        Say("");
+
+        int snapshot = 0, misses = 0;
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        while (clock.Elapsed.TotalSeconds < seconds)
+        {
+            Thread.Sleep(1200);
+            lock (traffic) traffic.Clear();
+            var cur = Fetch();
+            if (cur == null) { misses++; continue; }
+            var changed = new List<int>();
+            for (int i = 15; i < 525; i++) if (cur[i] != baseline[i]) changed.Add(i);
+            if (changed.Count == 0) continue;
+
+            snapshot++;
+            File.WriteAllBytes(System.IO.Path.Combine(outDir, $"watch-{snapshot:D3}.syx"), cur);
+            string[] seen;
+            lock (traffic) seen = traffic.ToArray();
+            Say($"--- change #{snapshot} at +{clock.Elapsed.TotalSeconds:F0} s: {changed.Count} byte(s) ---");
+            foreach (int i in changed)
+            {
+                string claim = byOffset.TryGetValue(i, out var l) ? string.Join(" | ", l) : "(table has nothing at this offset)";
+                string alt = byOffset.TryGetValue(i - 13, out var l13) ? "   [if offsets count from the payload: " + string.Join(" | ", l13) + "]" : "";
+                Say($"  byte {i,3}: {baseline[i],3} -> {cur[i],3}   {claim}{alt}");
+            }
+            if (seen.Length > 0)
+            {
+                Say("  port said: " + string.Join("; ", seen.Distinct().Take(6)));
+            }
+            else Say("  port said: (nothing besides aftertouch)");
+            Say("");
+            baseline = cur;
+        }
+        Say($"done: {snapshot} change(s), {misses} poll(s) unanswered");
         return 0;
     }
 
@@ -974,6 +1098,37 @@ static class Program
         var (sus, _, susCc) = Config.AnalogControls[3];
         var pedal = new Mapping { Send = "cc", Channel = 1, Number = susCc, Mode = "momentary" };
         Equal(true, AutomapEngine.AnalogSendSuppressed(sus, pedal, relayActive: false), "factory sustain, relay off: held back");
+    }
+
+    /// <summary>
+    /// The Keys and Synth lamps share one wire, so the split is by message. Hands are
+    /// notes, pressure, wheels and pedals; the instrument speaking for itself is SysEx,
+    /// NRPN and other controllers, and program changes.
+    /// </summary>
+    static void ActivityLampsSplitHandsFromInstrument()
+    {
+        var K = MidiActivity.Source.Keys; var S = MidiActivity.Source.Synth;
+        Equal(K, MidiActivity.ClassifyPort(0x90, 60), "note on");
+        Equal(K, MidiActivity.ClassifyPort(0x81, 60), "note off, any channel");
+        Equal(K, MidiActivity.ClassifyPort(0xA0, 60), "polyphonic pressure");
+        Equal(K, MidiActivity.ClassifyPort(0xD1, 40), "channel pressure");
+        Equal(K, MidiActivity.ClassifyPort(0xE0, 0),  "pitch bend");
+        Equal(K, MidiActivity.ClassifyPort(0xB0, 1),  "mod wheel");
+        Equal(K, MidiActivity.ClassifyPort(0xB0, 11), "expression");
+        Equal(K, MidiActivity.ClassifyPort(0xB0, 64), "sustain");
+        Equal(S, MidiActivity.ClassifyPort(0xF0, 0),  "SysEx");
+        Equal(S, MidiActivity.ClassifyPort(0xB1, 99), "NRPN MSB is the instrument talking");
+        Equal(S, MidiActivity.ClassifyPort(0xB1, 6),  "data entry too");
+        Equal(S, MidiActivity.ClassifyPort(0xC0, 5),  "program change");
+        Equal(S, MidiActivity.ClassifyPort(0xB0, 74), "a controller that is not a performance control");
+
+        var act = new MidiActivity();
+        Equal(false, act.Lit(K), "nothing has moved");
+        Equal(0L, act.Count(K), "and nothing is counted");
+        act.Touch(K);
+        Equal(true, act.Lit(K), "lit right after a touch");
+        Equal(1L, act.Count(K), "counted once");
+        Equal(false, act.Lit(S), "the other lamp is unaffected");
     }
 
     static void ReleaseWithoutConnectionIsHarmless()

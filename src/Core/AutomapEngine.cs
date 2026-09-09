@@ -216,6 +216,9 @@ public sealed class AutomapEngine : IDisposable
     volatile bool _repaintAll;
 
     public Config Config { get; set; } = Config.CreateDefault();
+
+    /// <summary>Where MIDI last moved, per source, for the window's activity lamps.</summary>
+    public MidiActivity Activity { get; } = new();
     public int BankIndex { get; private set; }
     public int PageIndex { get; private set; }
     public bool Connected { get; private set; }
@@ -469,6 +472,7 @@ public sealed class AutomapEngine : IDisposable
                 try { any |= send(o); }
                 catch (Exception ex) { Say($"MIDI output '{o.PortName}' failed: {ex.Message}"); }
             }
+            if (any) Activity.Touch(MidiActivity.Source.DawOut);
             return any;
         }
     }
@@ -705,6 +709,7 @@ public sealed class AutomapEngine : IDisposable
     {
         if (_writePin == IntPtr.Zero) return;
         lock (_writeLock) Ks.WriteMidi(_writePin, data, out _);
+        Activity.Touch(MidiActivity.Source.PanelOut);
     }
 
     void Announce() { Write(ModeOn); Thread.Sleep(10); Write(ModeOn); }
@@ -1611,6 +1616,7 @@ public sealed class AutomapEngine : IDisposable
                         var sx = pending.GetRange(0, end + 1).ToArray();
                         pending.RemoveRange(0, end + 1);
                         status = 0;
+                        Activity.Touch(MidiActivity.Source.Synth);
                         NoteSysEx("midi", sx);
                         continue;
                     }
@@ -1625,6 +1631,7 @@ public sealed class AutomapEngine : IDisposable
                     pending.RemoveRange(0, need);
                     // Mod wheel / pitch / aftertouch ride this port as well as (or
                     // instead of) the Automap analog stream. Same pickup path as B3.
+                    Activity.Touch(MidiActivity.ClassifyPort(status, d1));
                     OnPortMidiAnalog(status, d1, d2);
                     ForwardKeyboardMidi(status, d1, d2);
                     PortMidi?.Invoke(this, new MidiInEventArgs
@@ -1666,6 +1673,7 @@ public sealed class AutomapEngine : IDisposable
 
     void OnMode(bool on)
     {
+        Activity.Touch(MidiActivity.Source.PanelIn);
         // The announcement arrives as a burst - three within about 17 ms at each entry,
         // measured in both captures, with minutes of silence in between. So a repeat is
         // not a fresh entry and must not re-run the whole initialisation or log again,
@@ -1710,6 +1718,9 @@ public sealed class AutomapEngine : IDisposable
 
     void OnMessage(byte status, byte d1, byte d2)
     {
+        // Channel 16 is the instrument reporting its own keyboard state, not a hand on the
+        // panel, so it lights the Synth lamp; everything else on this wire is the panel.
+        Activity.Touch((status & 0x0F) == 15 ? MidiActivity.Source.Synth : MidiActivity.Source.PanelIn);
         switch ((status & 0x0F) + 1)
         {
             case 1: OnEncoder(d1, d2 > 63 ? d2 - 128 : d2); break;
