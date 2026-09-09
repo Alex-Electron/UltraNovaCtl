@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- MIDI activity lamps in the instrument-state strip, one per place MIDI can move: Panel
+  in, Panel out, Keys, Synth, DAW out, and Learn in while learning. Each lights for a
+  moment on a message; the tooltip says what the lamp means and how many messages it has
+  seen. Keys and Synth share the instrument's own port and are told apart by message
+  type - hands versus the instrument speaking for itself. Looked at on the instrument:
+  Synth blinks on a panel edit, Keys on a played note, and the strip reads at a glance.
+- The check runner gained a read-only `--watch` mode that polls the edit buffer and, when
+  bytes change, names the offsets that moved against the parameter table, alongside what
+  the port sent. It settled that table offsets count from byte 13 and confirmed three
+  parameters from three sections byte for byte, in both offset and MIDI address - see
+  `docs/PATCH-PROTOCOL.ru.md`.
+
 ## 1.2.2 — 2026-09-09
 
 Tried on the instrument before release: with the relay unticked, the mod wheel on its
