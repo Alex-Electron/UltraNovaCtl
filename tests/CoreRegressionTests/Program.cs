@@ -1,5 +1,10 @@
 using UltraNovaCtl.Core;
 
+// The checks drive WinMM, Kernel Streaming and window messages; there is no other
+// platform they could run on, and saying so once here is what stops every call into a
+// Windows-only API from being flagged as reachable elsewhere.
+[assembly: System.Runtime.Versioning.SupportedOSPlatform("windows")]
+
 namespace UltraNovaCtl.CoreRegressionTests;
 
 static class Program
@@ -16,6 +21,7 @@ static class Program
         if (args.Length >= 3 && args[0] == "--watch") return WatchEdits(args);
         if (args.Length >= 1 && args[0] == "--editor") return EditorSession(args);
         if (args.Length >= 1 && args[0] == "--writetest") return WriteTest(args);
+        if (args.Length >= 1 && args[0] == "--usb") return UsbWatch(args);
 
         (string name, Action run)[] tests =
         {
@@ -80,6 +86,7 @@ static class Program
             ("following can be switched off and disposal stops it", FollowingCanBeSwitchedOffAndDisposalStopsIt),
             ("loading from a file starts a draft", LoadingFromAFileStartsADraft),
             ("a disposed session is not kept alive by the engine", ADisposedSessionIsNotKeptAliveByTheEngine),
+            ("the watcher recognises Novation paths", TheWatcherRecognisesNovationPaths),
             ("releasing notes without a connection is harmless", ReleaseWithoutConnectionIsHarmless),
             ("reopening outputs reports failure instead of throwing", ReopenOutputsReportsFailure),
             ("an unopened output is not usable", UnopenedOutputIsNotUsable),
@@ -547,6 +554,38 @@ static class Program
         {
             engine.DetachEditor();
             engine.Stop();
+        }
+    }
+
+
+    /// <summary>
+    /// Watch for the instrument being unplugged and plugged back in. Prints each arrival
+    /// and removal Windows announces for a Novation device, so the only way to see output
+    /// is to pull the cable. Nothing is sent to the instrument.
+    /// </summary>
+    static int UsbWatch(string[] args)
+    {
+        int seconds = args.Length > 1 && int.TryParse(args[1], out int s) ? s : 60;
+        using var watcher = new DeviceWatcher();
+        int arrivals = 0, removals = 0;
+        watcher.Arrived += (_, path) => { arrivals++; Console.WriteLine($"ПОДКЛЮЧЁН   {Short(path)}"); };
+        watcher.Removed += (_, path) => { removals++; Console.WriteLine($"ОТКЛЮЧЁН    {Short(path)}"); };
+
+        if (!watcher.Start())
+        {
+            Console.WriteLine("наблюдатель не запустился: " + watcher.Failure);
+            return 1;
+        }
+        Console.WriteLine($"слушаю {seconds} с - выдерни USB из синта и вставь обратно\n");
+        Thread.Sleep(seconds * 1000);
+        Console.WriteLine($"\nИТОГО: отключений {removals}, подключений {arrivals}");
+        return arrivals > 0 && removals > 0 ? 0 : 2;
+
+        static string Short(string path)
+        {
+            int a = path.IndexOf("usb#", StringComparison.OrdinalIgnoreCase);
+            int b = path.IndexOf("#{", StringComparison.OrdinalIgnoreCase);
+            return a >= 0 && b > a ? path.Substring(a, b - a) : path;
         }
     }
 
@@ -2135,6 +2174,20 @@ static class Program
             try { session.Load(null!); } catch (ArgumentNullException) { threw = true; }
             True(threw, "loading nothing is refused");
         }
+    }
+
+
+    static void TheWatcherRecognisesNovationPaths()
+    {
+        True(DeviceWatcher.IsNovationPath(
+            @"\\?\usb#vid_1235&pid_0011#5&32184fcd&0&2#{6994ad04-93ef-11d0-a3cc-00a0c9223196}\global"),
+            "the instrument's own interface path is recognised");
+        True(DeviceWatcher.IsNovationPath(@"\\?\USB#VID_1235&PID_001E#x#{guid}"),
+            "case does not matter, and a MiniNova is Novation too");
+        True(!DeviceWatcher.IsNovationPath(@"\\?\usb#vid_046d&pid_c52b#x#{guid}"),
+            "a mouse is not");
+        True(!DeviceWatcher.IsNovationPath(null), "null is not, and does not throw");
+        True(!DeviceWatcher.IsNovationPath(""), "nor is an empty path");
     }
 
     static void ReleaseWithoutConnectionIsHarmless()

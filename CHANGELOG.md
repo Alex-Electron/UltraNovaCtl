@@ -42,6 +42,14 @@
   instrument reports is ever sent back to it. Following the panel works the way the native
   plug-in does: a selection or an edit arms one poll for the edit buffer a moment later,
   and a run of selections or a swept knob yields one request after the last of them.
+- `DeviceWatcher` hears the instrument being plugged in and pulled out. A message-only
+  window on its own thread registers for the audio device-interface class and raises an
+  event per arrival and removal whose path names a Novation device - the one thing
+  Hidi64.dll did that we did not. It only announces; closing pins on removal and reopening
+  them once the driver has settled belongs to whoever owns the connection. Built and
+  exercised through the check runner's read-only `--usb` mode, but the announcement itself
+  is not yet confirmed on hardware: the one attempt to trigger it programmatically never
+  reached the device, so a real replug is still owed before this is relied on.
 - New engine events for what arrives that way: a whole patch, a status reply carrying
   firmware and Local Control, a parameter edited elsewhere, and a patch selected on the
   panel. Patch selection is sent as two data bytes against one NRPN, bank then slot, and
