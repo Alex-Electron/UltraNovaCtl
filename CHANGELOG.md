@@ -50,6 +50,12 @@
   exercised through the check runner's read-only `--usb` mode, but the announcement itself
   is not yet confirmed on hardware: the one attempt to trigger it programmatically never
   reached the device, so a real replug is still owed before this is relied on.
+- The MIDI channel for parameter edits is now read from the instrument instead of assumed.
+  Byte 13 of the status reply carries it, which is how the native plug-in decides - found by
+  disassembling it during the feature inventory - and it explains why every edit measured on
+  this instrument arrived on channel 2: its reply says 0x01. The engine remembers what the
+  last reply said and sends edits there by default. Confirmed on hardware: the session
+  reports "канал 2" read from the reply, not from a constant.
 - New engine events for what arrives that way: a whole patch, a status reply carrying
   firmware and Local Control, a parameter edited elsewhere, and a patch selected on the
   panel. Patch selection is sent as two data bytes against one NRPN, bank then slot, and

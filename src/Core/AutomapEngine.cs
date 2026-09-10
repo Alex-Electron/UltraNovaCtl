@@ -245,6 +245,13 @@ public sealed class AutomapEngine : IDisposable
     Guid _editorSub = Guid.Empty;
     readonly object _editorLock = new();
     readonly NrpnReader _nrpn = new();
+
+    /// <summary>
+    /// The channel the instrument said it is on, from its last status reply; 2 until one
+    /// has been heard, because that is what every instrument measured so far reported.
+    /// Parameter edits are sent on this channel unless a caller names another.
+    /// </summary>
+    public int InstrumentChannel { get; private set; } = 2;
     Thread _reader, _painter, _midiReader;
     volatile bool _stop;
     volatile bool _demo;
@@ -754,6 +761,7 @@ public sealed class AutomapEngine : IDisposable
     /// </summary>
     public bool SendControlChange(int channel, int controller, int value)
     {
+        if (channel == 0) channel = InstrumentChannel;
         if ((uint)(channel - 1) > 15) throw new ArgumentOutOfRangeException(nameof(channel));
         if ((uint)controller > 127) throw new ArgumentOutOfRangeException(nameof(controller));
         if ((uint)value > 127) throw new ArgumentOutOfRangeException(nameof(value));
@@ -767,6 +775,7 @@ public sealed class AutomapEngine : IDisposable
     /// </summary>
     public bool SendNrpn(int channel, int msb, int lsb, int value)
     {
+        if (channel == 0) channel = InstrumentChannel;
         if ((uint)(channel - 1) > 15) throw new ArgumentOutOfRangeException(nameof(channel));
         if ((uint)msb > 127 || (uint)lsb > 127 || (uint)value > 127)
             throw new ArgumentOutOfRangeException(nameof(value));
@@ -813,10 +822,13 @@ public sealed class AutomapEngine : IDisposable
         if (PatchProtocol.IsStatusReply(sx))
         {
             var fw = PatchProtocol.SenderFirmware(sx);
+            int channel = PatchProtocol.ChannelOf(sx);
+            InstrumentChannel = channel;
             StatusReceived?.Invoke(this, new StatusEventArgs
             {
                 LocalOn = PatchProtocol.LocalOn(sx),
-                Major = fw.Major, Minor = fw.Minor, Build = fw.Build
+                Major = fw.Major, Minor = fw.Minor, Build = fw.Build,
+                Channel = channel
             });
         }
     }

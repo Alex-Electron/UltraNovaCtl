@@ -31,6 +31,9 @@ public sealed class StatusEventArgs : EventArgs
     public int Minor;
     public int Build;
 
+    /// <summary>The instrument's MIDI channel, one-based, as the reply states it.</summary>
+    public int Channel;
+
     public string Version => $"{Major}.{Minor}.{Build:00}";
 }
 

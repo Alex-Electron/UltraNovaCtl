@@ -429,7 +429,7 @@ static class Program
         engine.StatusReceived += (_, e) =>
         {
             statuses++;
-            Console.WriteLine($"СТАТУС: прошивка {e.Version}, Local {(e.LocalOn ? "On" : "Off")}");
+            Console.WriteLine($"СТАТУС: прошивка {e.Version}, Local {(e.LocalOn ? "On" : "Off")}, канал {e.Channel}");
         };
         engine.PatchReceived += (_, e) =>
         {
@@ -1525,6 +1525,12 @@ static class Program
         var fw = PatchProtocol.SenderFirmware(StatusReply(1));
         Equal(2, fw.Major, "the reply reports the instrument's own firmware");
         Equal(0, fw.Minor, "minor of the reported firmware");
+
+        // Byte 13 is the instrument's channel, zero-based on the wire. The captured reply
+        // carries 0x01, which is channel 2 - where every edit on this instrument arrived.
+        Equal(2, PatchProtocol.ChannelOf(StatusReply(1)), "byte 13 of 1 is MIDI channel 2");
+        var onOne = StatusReply(1); onOne[13] = 0x00;
+        Equal(1, PatchProtocol.ChannelOf(onOne), "and 0 is channel 1");
     }
 
     static byte[] StatusReply(byte local) => new byte[]
@@ -1634,6 +1640,12 @@ static class Program
         True(seen != null, "a status reply is reported");
         True(seen!.LocalOn, "Local Control is read from it");
         Equal("2.0.00", seen!.Version, "and the firmware version");
+        Equal(2, seen!.Channel, "and the instrument's channel");
+        Equal(2, engine.InstrumentChannel, "which the engine now uses for edits");
+
+        var onSeven = StatusReply(1); onSeven[13] = 0x06;
+        engine.DispatchEditorSysEx(onSeven);
+        Equal(7, engine.InstrumentChannel, "a later reply moves it - the setting is the instrument's, not ours");
 
         engine.DispatchEditorSysEx(StatusReply(0));
         True(!seen!.LocalOn, "Local off is read too");

@@ -57,6 +57,14 @@ public static class PatchProtocol
     /// <summary>Byte 12 of a status reply: 1 when Local Control is on.</summary>
     public const int StatusLocalIndex = 12;
 
+    /// <summary>
+    /// Byte 13 of a status reply: the instrument's MIDI channel, zero-based. The native
+    /// editor takes its channel from here rather than from any setting of its own - found
+    /// by disassembling the plug-in, and it explains why everything measured on this
+    /// instrument happened on channel 2: its reply carries 0x01.
+    /// </summary>
+    public const int StatusChannelIndex = 13;
+
     static readonly byte[] Preamble = { 0xF0, 0x00, 0x20, 0x29, 0x03, 0x01, 0x7F };
 
     /// <summary>
@@ -120,6 +128,17 @@ public static class PatchProtocol
     {
         if (!IsStatusReply(statusReply)) throw new ArgumentException("not a status reply");
         return statusReply[StatusLocalIndex] == 1;
+    }
+
+    /// <summary>
+    /// The instrument's MIDI channel as a status reply states it, one-based. This is the
+    /// channel an editor must send parameter edits on, and the one the instrument reports
+    /// its own edits on.
+    /// </summary>
+    public static int ChannelOf(byte[] statusReply)
+    {
+        if (!IsStatusReply(statusReply)) throw new ArgumentException("not a status reply");
+        return (statusReply[StatusChannelIndex] & 0x0F) + 1;
     }
 
     /// <summary>
