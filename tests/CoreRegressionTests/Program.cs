@@ -7,7 +7,7 @@ using UltraNovaCtl.Core;
 
 namespace UltraNovaCtl.CoreRegressionTests;
 
-static class Program
+static partial class Program
 {
     static int Main(string[] args)
     {
@@ -87,6 +87,24 @@ static class Program
             ("loading from a file starts a draft", LoadingFromAFileStartsADraft),
             ("a disposed session is not kept alive by the engine", ADisposedSessionIsNotKeptAliveByTheEngine),
             ("the watcher recognises Novation paths", TheWatcherRecognisesNovationPaths),
+            ("editor waits for status and current buffer", EditorWaitsForStatusAndBuffer),
+            ("every editor operation yields to the native owner", EditorYieldsToNativeOwner),
+            ("failed editor handshakes close and time out", EditorHandshakeFailures),
+            ("the codec reproduces the documented examples", TheCodecReproducesTheDocumentedExamples),
+            ("the rounding rule is floor of the half", TheRoundingRuleIsFloorOfTheHalf),
+            ("the codec round-trips across its range", TheCodecRoundTripsAcrossItsRange),
+            ("the one signed parameter travels as two's complement", TheOneSignedParameterTravelsAsTwosComplement),
+            ("a wide parameter uses two bytes, most significant first", AWideParameterUsesTwoBytesMostSignificantFirst),
+            ("a packed field leaves its neighbours alone", APackedFieldLeavesItsNeighboursAlone),
+            ("a packed field is written by its own control value", APackedFieldIsWrittenByItsOwnControlValue),
+            ("a momentary parameter never touches a patch", AMomentaryParameterNeverTouchesAPatch),
+            ("an inverted parameter runs backwards", AnInvertedParameterRunsBackwards),
+            ("formatting prefers labels then units", FormattingPrefersLabelsThenUnits),
+            ("metadata preserves flags and validates wire bytes", MetadataPreservesFlags),
+            ("metadata follows by polling without echo", MetadataFollowsWithoutEcho),
+            ("old polls and stored dumps do not replace the draft", SessionRejectsStaleWork),
+            ("draft events use the supplied context", SessionUsesSuppliedContext),
+            ("NRPN ignores stale data and RPN messages", NrpnRejectsStaleData),
             ("releasing notes without a connection is harmless", ReleaseWithoutConnectionIsHarmless),
             ("reopening outputs reports failure instead of throwing", ReopenOutputsReportsFailure),
             ("an unopened output is not usable", UnopenedOutputIsNotUsable),
@@ -1243,9 +1261,13 @@ static class Program
     {
         string name = "UltraNovaCtl-test-" + Guid.NewGuid().ToString("N");
         Equal(false, NativeLocks.IsHeld(name), "an unheld name reads as free");
+        Equal(false, NativeLocks.IsHeldOrUnknown(name), "strict probe also recognises an absent name");
 
         using (var held = new Mutex(true, name))
+        {
             Equal(true, NativeLocks.IsHeld(name), "a held name reads as held");
+            Equal(true, NativeLocks.IsHeldOrUnknown(name), "strict probe recognises an existing owner");
+        }
 
         Equal(false, NativeLocks.IsHeld(name), "and is free again once released");
 
@@ -1253,6 +1275,8 @@ static class Program
         Equal(false, NativeLocks.IsHeld(name), "probing did not create it");
         Equal(false, NativeLocks.IsHeld(""), "an empty name is not a lock");
         Equal(false, NativeLocks.IsHeld(null), "nor is nothing at all");
+        Equal(true, NativeLocks.IsHeldOrUnknown(null), "strict probe cannot grant access without a name");
+        Equal(false, NativeLocks.IsHeldOrUnknown(name), "strict probe never creates the object");
     }
 
     /// <summary>
