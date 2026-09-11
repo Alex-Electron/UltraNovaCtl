@@ -58,6 +58,14 @@ public sealed class AutomapEngine : IDisposable
     readonly Timer _editorWatch;
     bool _disposed;
 
+    /// <summary>
+    /// Set the moment disposal begins, before anything is torn down. The disposed flag
+    /// cannot do this job: it only becomes true once teardown has finished, so a caller
+    /// that attached in between would open a pin nothing is left to close, and leave it
+    /// running on a filter that is already shut.
+    /// </summary>
+    volatile bool _disposing;
+
     public AutomapEngine() : this(null) { }
 
     internal AutomapEngine(EditorTransport transport)
@@ -731,7 +739,7 @@ public sealed class AutomapEngine : IDisposable
     /// </summary>
     public bool AttachEditor()
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        ObjectDisposedException.ThrowIf(_disposed || _disposing, this);
         // A new connection starts with no NRPN parameter selected. Without this the
         // selection made in a previous session survives, so the first bare Data Entry byte
         // after reattaching is applied to whatever that stale parameter was.
@@ -954,7 +962,8 @@ public sealed class AutomapEngine : IDisposable
 
     public void Dispose()
     {
-        if (_disposed) return;
+        if (_disposing || _disposed) return;
+        _disposing = true;          // refuse new work first, then tear down
         Stop();
         _disposed = true;
         _editorWatch.Dispose();

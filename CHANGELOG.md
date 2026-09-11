@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Editor connection hardening: check native ownership before every request/write,
+  yield the private writer without sending transport-disable to a new owner, require
+  fresh status and edit buffer before parameter writes, and fail a timed-out or failed
+  handshake. Reattachment is explicit; hardware coexistence still needs acceptance.
+- Preserve all metadata flag bits; validate and expose metadata messages through the
+  engine. PatchSession schedules a fresh dump without echoing incoming metadata.
+- Reject stale deferred polls across connection generations, cancel them when panel
+  following stops or a file is loaded, and keep stored-slot responses out of the current
+  draft. Optional SynchronizationContext delivery supports a single-threaded UI model.
+- Reject stale NRPN data bytes and cancel NRPN selection when RPN is selected.
+  Regression suite: 77 passing checks when that work landed, including eight new editor
+  groups; the runner prints the current total and is the number to trust. Added a
+  dated core review and an inventory index that explicitly retains open completeness gaps.
+
 - The editor transport, the piece everything else waits on. The instrument publishes
   Port 1 twice: a standard-MIDI pair Windows claims as the WinMM device, and a private
   pair behind a Novation subformat that Windows never takes. Pin 6 of that private pair
@@ -42,7 +56,7 @@
   instrument reports is ever sent back to it. Following the panel works the way the native
   plug-in does: a selection or an edit arms one poll for the edit buffer a moment later,
   and a run of selections or a swept knob yields one request after the last of them.
-- `DeviceWatcher` hears the instrument being plugged in and pulled out. A message-only
+- `DeviceWatcher` hears the instrument being plugged in and pulled out. An invisible top-level
   window on its own thread registers for the audio device-interface class and raises an
   event per arrival and removal whose path names a Novation device - the one thing
   Hidi64.dll did that we did not. It only announces; closing pins on removal and reopening

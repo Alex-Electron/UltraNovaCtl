@@ -56,37 +56,64 @@ public static class NativeLocks
         return false;
     }
 
+    /// <summary>What one attempt to open a named object was able to establish.</summary>
+    internal enum Attempted
+    {
+        /// <summary>The object is there, so somebody owns it.</summary>
+        Held,
+
+        /// <summary>Not there, or not of this kind - this attempt says nothing worse.</summary>
+        Absent,
+
+        /// <summary>The attempt failed for a reason we did not plan for.</summary>
+        Unknown,
+    }
+
+    /// <summary>
+    /// One attempt, classified. A named object can be a mutex or an event depending on who
+    /// created it, and each mismatch throws its own exception, so an attempt that cannot
+    /// find its own kind is not evidence of absence - only of that attempt's silence.
+    /// Being refused permission is evidence of presence: it exists, we may not open it.
+    /// </summary>
+    internal static Attempted Attempt(System.Func<bool> tryOpen)
+    {
+        try { return tryOpen() ? Attempted.Held : Attempted.Absent; }
+        catch (WaitHandleCannotBeOpenedException) { return Attempted.Absent; }
+        catch (UnauthorizedAccessException) { return Attempted.Held; }
+        catch { return Attempted.Unknown; }
+    }
+
+    /// <summary>
+    /// What an attempt means to a given caller, and the whole difference between the two
+    /// probes. An informational caller reads an unexplained failure as "probably free"; the
+    /// gate deciding whether we may drive the instrument reads it as "assume somebody else
+    /// has it". Backwards, this lets two editors write to one edit buffer exactly when the
+    /// probe is misbehaving - the moment it is least safe to guess.
+    /// </summary>
+    internal static bool Decide(Attempted probe, bool failClosed) => probe switch
+    {
+        Attempted.Held => true,
+        Attempted.Unknown => failClosed,
+        _ => false,
+    };
+
     [System.Runtime.Versioning.SupportedOSPlatform("windows")]
     static bool Exists(string name, bool failClosed)
     {
-        // A named object can be a mutex or an event depending on who made it, and the
-        // open fails with a different exception for each mismatch - so both are tried and
-        // missing/wrong-type results fall through. Unexpected errors only grant access
-        // to legacy informational callers, never to the editor's strict write gate.
-        try
+        var byMutex = Attempt(() =>
         {
-            if (Mutex.TryOpenExisting(name, out var mutex))
-            {
-                mutex.Dispose();
-                return true;
-            }
-        }
-        catch (WaitHandleCannotBeOpenedException) { /* no such name, or not a mutex */ }
-        catch (UnauthorizedAccessException) { return true; }   // it exists, we may not open it
-        catch { if (failClosed) return true; }
+            if (!Mutex.TryOpenExisting(name, out var mutex)) return false;
+            mutex.Dispose();
+            return true;
+        });
+        if (byMutex != Attempted.Absent) return Decide(byMutex, failClosed);
 
-        try
+        var byEvent = Attempt(() =>
         {
-            if (EventWaitHandle.TryOpenExisting(name, out var handle))
-            {
-                handle.Dispose();
-                return true;
-            }
-        }
-        catch (WaitHandleCannotBeOpenedException) { }
-        catch (UnauthorizedAccessException) { return true; }
-        catch { if (failClosed) return true; }
-
-        return false;
+            if (!EventWaitHandle.TryOpenExisting(name, out var handle)) return false;
+            handle.Dispose();
+            return true;
+        });
+        return Decide(byEvent, failClosed);
     }
 }
