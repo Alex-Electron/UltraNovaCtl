@@ -54,6 +54,22 @@ public sealed class KeyboardStateEventArgs : EventArgs
 /// </summary>
 public sealed class AutomapEngine : IDisposable
 {
+    readonly EditorTransport _editorTransport;
+    readonly Timer _editorWatch;
+    bool _disposed;
+
+    public AutomapEngine() : this(null) { }
+
+    internal AutomapEngine(EditorTransport transport)
+    {
+        _editorTransport = transport ?? new EditorTransport(OpenEditorPin,
+            () => ClosePin(ref _editorPin),
+            message => { bool ok = Ks.WriteMidi(_editorPin, message, out _);
+                if (ok) Activity.Touch(MidiActivity.Source.PanelOut); return ok; },
+            () => NativeLocks.IsHeldOrUnknown(NativeLocks.EditorHardware));
+        _editorWatch = new Timer(_ => _editorTransport.CheckOwnership(), null, Timeout.Infinite, Timeout.Infinite);
+    }
+
     public const int EncoderCount = 10;
     public const int FieldWidth = 9;
     public const int DisplayWidth = 72;
@@ -93,6 +109,7 @@ public sealed class AutomapEngine : IDisposable
 
     /// <summary>The instrument answered a status request. Raised on the reader thread.</summary>
     public event EventHandler<StatusEventArgs> StatusReceived;
+    public event EventHandler<MetadataEventArgs> MetadataReceived;
 
     /// <summary>
     /// A parameter was edited somewhere other than here - the panel, or another editor.
@@ -243,15 +260,16 @@ public sealed class AutomapEngine : IDisposable
     IntPtr _editorPin = IntPtr.Zero;
     uint _editorPinId = uint.MaxValue;
     Guid _editorSub = Guid.Empty;
-    readonly object _editorLock = new();
     readonly NrpnReader _nrpn = new();
 
     /// <summary>
-    /// The channel the instrument said it is on, from its last status reply; 2 until one
-    /// has been heard, because that is what every instrument measured so far reported.
+    /// The channel the instrument said it is on, from its last status reply; 0 until one
+    /// has been heard. A new attachment must obtain fresh status before sending edits.
     /// Parameter edits are sent on this channel unless a caller names another.
     /// </summary>
-    public int InstrumentChannel { get; private set; } = 2;
+    public int InstrumentChannel => _editorTransport.Channel;
+    public EditorConnectionState EditorState => _editorTransport.State;
+    public long EditorGeneration => _editorTransport.Generation;
     Thread _reader, _painter, _midiReader;
     volatile bool _stop;
     volatile bool _demo;
@@ -351,6 +369,8 @@ public sealed class AutomapEngine : IDisposable
 
     public bool Start(string filterMatch = "vid_1235")
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (Connected) return true;
         string path = FindFilter(filterMatch);
         if (path == null) { Say($"no KS filter matching '{filterMatch}'"); return false; }
 
@@ -698,7 +718,7 @@ public sealed class AutomapEngine : IDisposable
     // ---- editor transport --------------------------------------------------
 
     /// <summary>True while this engine holds the instrument's private editor input.</summary>
-    public bool EditorAttached { get; private set; }
+    public bool EditorAttached => _editorTransport.Attached;
 
     /// <summary>
     /// Claim the private editor channel and introduce ourselves the way the native plug-in
@@ -711,62 +731,55 @@ public sealed class AutomapEngine : IDisposable
     /// </summary>
     public bool AttachEditor()
     {
-        lock (_editorLock)
-        {
-            if (EditorAttached) return true;
-            if (_filter == IntPtr.Zero) { Say("editor: not connected"); return false; }
-            if (_editorPinId == uint.MaxValue)
-            { Say("editor: no private Port 1 write pin on this device"); return false; }
-            if (NativeEditorDriving())
-            { Say("editor: the Novation editor owns the instrument, not attaching"); return false; }
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        // A new connection starts with no NRPN parameter selected. Without this the
+        // selection made in a previous session survives, so the first bare Data Entry byte
+        // after reattaching is applied to whatever that stale parameter was.
+        _nrpn.Reset();
+        bool ok = _editorTransport.Attach();
+        if (ok) _editorWatch.Change(250, 250);
+        Say(ok ? $"editor: attached on pin {_editorPinId}; synchronizing" : $"editor: attach refused ({EditorState})");
+        return ok;
+    }
 
-            _editorPin = OpenPin(_editorPinId, true, _editorSub);
-            if (_editorPin == IntPtr.Zero) { Say("editor: write pin would not open"); return false; }
-
-            _nrpn.Reset();
-            EditorAttached = true;
-            Say($"editor: attached on pin {_editorPinId}");
-        }
-
-        SendToInstrument(PatchProtocol.TransportEnable);
-        SendToInstrument(PatchProtocol.RequestStatus());
-        SendToInstrument(PatchProtocol.RequestEditBuffer());
+    bool OpenEditorPin()
+    {
+        if (_filter == IntPtr.Zero || _midiPin == IntPtr.Zero || _editorPinId == uint.MaxValue) return false;
+        _editorPin = Ks.CreateMidiPin(_filter, _editorPinId, true, _editorSub, out _);
+        if (_editorPin == IntPtr.Zero) return false;
+        foreach (uint state in new[] { Ks.KSSTATE_ACQUIRE, Ks.KSSTATE_PAUSE, Ks.KSSTATE_RUN })
+            if (!Ks.SetPinState(_editorPin, state, out _)) { ClosePin(ref _editorPin); return false; }
         return true;
     }
 
     /// <summary>Release the editor channel, sending the transport disable the plug-in sends.</summary>
     public void DetachEditor()
     {
-        lock (_editorLock)
-        {
-            if (!EditorAttached) return;
-            SendToInstrumentLocked(PatchProtocol.TransportDisable);
-            EditorAttached = false;
-            ClosePin(ref _editorPin);
-            Say("editor: detached");
-        }
+        if (_disposed) return;
+        _editorWatch.Change(Timeout.Infinite, Timeout.Infinite);
+        _editorTransport.Detach();
+        _nrpn.Reset();
     }
 
     /// <summary>Ask for the current edit buffer. The reply arrives as PatchReceived.</summary>
-    public bool RequestPatch() => SendToInstrument(PatchProtocol.RequestEditBuffer());
+    public bool RequestPatch() => _editorTransport.Request(PatchProtocol.RequestEditBuffer());
+    internal bool RequestPatch(long generation) => _editorTransport.Request(PatchProtocol.RequestEditBuffer(), generation);
 
     /// <summary>Ask a stored slot for its contents. Bank is one-based, program zero-based.</summary>
     public bool RequestStoredPatch(int bank, int program)
-        => SendToInstrument(PatchProtocol.RequestStored(bank, program));
+        => _editorTransport.Request(PatchProtocol.RequestStored(bank, program));
 
     /// <summary>
     /// Send a controller change to the instrument, the way a parameter edit travels. The
-    /// instrument reports its own panel edits as controllers on channel 2 over this same
-    /// pair, so that is the channel an editor answers on.
+    /// channel zero selects the channel from the current connection's status reply.
     /// </summary>
     public bool SendControlChange(int channel, int controller, int value)
     {
-        if (channel == 0) channel = InstrumentChannel;
-        if ((uint)(channel - 1) > 15) throw new ArgumentOutOfRangeException(nameof(channel));
+        if ((uint)channel > 16) throw new ArgumentOutOfRangeException(nameof(channel));
         if ((uint)controller > 127) throw new ArgumentOutOfRangeException(nameof(controller));
         if ((uint)value > 127) throw new ArgumentOutOfRangeException(nameof(value));
-        return SendToInstrument(new byte[]
-            { (byte)(0xB0 | (channel - 1)), (byte)controller, (byte)value });
+        return _editorTransport.SendParameter(channel, ch => new byte[]
+            { (byte)(0xB0 | (ch - 1)), (byte)controller, (byte)value });
     }
 
     /// <summary>
@@ -775,36 +788,19 @@ public sealed class AutomapEngine : IDisposable
     /// </summary>
     public bool SendNrpn(int channel, int msb, int lsb, int value)
     {
-        if (channel == 0) channel = InstrumentChannel;
-        if ((uint)(channel - 1) > 15) throw new ArgumentOutOfRangeException(nameof(channel));
+        if ((uint)channel > 16) throw new ArgumentOutOfRangeException(nameof(channel));
         if ((uint)msb > 127 || (uint)lsb > 127 || (uint)value > 127)
             throw new ArgumentOutOfRangeException(nameof(value));
-        byte status = (byte)(0xB0 | (channel - 1));
-        return SendToInstrument(new byte[]
+        return _editorTransport.SendParameter(channel, ch =>
         {
-            status, 99, (byte)msb,
-            status, 98, (byte)lsb,
-            status, 6, (byte)value,
+            byte status = (byte)(0xB0 | (ch - 1));
+            return new byte[] { status, 99, (byte)msb, status, 98, (byte)lsb, status, 6, (byte)value };
         });
     }
 
-    /// <summary>Write raw bytes to the instrument's private input.</summary>
-    bool SendToInstrument(byte[] message)
-    {
-        lock (_editorLock) return SendToInstrumentLocked(message);
-    }
-
-    bool SendToInstrumentLocked(byte[] message)
-    {
-        if (_editorPin == IntPtr.Zero) return false;
-        if (!Ks.WriteMidi(_editorPin, message, out int err))
-        {
-            Say($"editor: write failed, error {err}");
-            return false;
-        }
-        Activity.Touch(MidiActivity.Source.PanelOut);
-        return true;
-    }
+    /// <summary>Change metadata in the edit buffer, under the same ownership gate as CC/NRPN.</summary>
+    public bool SendMetadata(byte[] message)
+        => PatchMetadata.IsMessage(message) && _editorTransport.SendMetadata((byte[])message.Clone());
 
     /// <summary>
     /// Sort one SysEx frame from the Port 1 reader. Dumps and status replies belong to the
@@ -815,6 +811,7 @@ public sealed class AutomapEngine : IDisposable
         if (PatchProtocol.IsDump(sx))
         {
             var (bank, program) = PatchProtocol.SlotOf(sx);
+            if (bank == 0) _editorTransport.ObserveEditBuffer();
             PatchReceived?.Invoke(this, new PatchEventArgs
             { Data = sx, Bank = bank, Program = program, Name = PatchProtocol.NameOf(sx) });
             return;
@@ -823,14 +820,17 @@ public sealed class AutomapEngine : IDisposable
         {
             var fw = PatchProtocol.SenderFirmware(sx);
             int channel = PatchProtocol.ChannelOf(sx);
-            InstrumentChannel = channel;
+            _editorTransport.ObserveStatus(channel);
             StatusReceived?.Invoke(this, new StatusEventArgs
             {
                 LocalOn = PatchProtocol.LocalOn(sx),
                 Major = fw.Major, Minor = fw.Minor, Build = fw.Build,
                 Channel = channel
             });
+            return;
         }
+        if (PatchMetadata.TryRead(sx, out MetadataEventArgs metadata))
+            MetadataReceived?.Invoke(this, metadata);
     }
 
     /// <summary>
@@ -855,12 +855,20 @@ public sealed class AutomapEngine : IDisposable
                 return;
             }
             ParameterChanged?.Invoke(this, new ParameterEventArgs
-            { IsNrpn = true, Msb = n.Msb, Lsb = n.Lsb, Value = n.Data, Channel = n.Channel });
+            {
+                IsNrpn = true, Msb = n.Msb, Lsb = n.Lsb, Channel = n.Channel,
+                Value = n.Data, ValueLow = n.DataLsb, HasLow = n.HasLsb,
+            });
             return;
         }
 
         // The four controllers that carry NRPN are not parameters in their own right.
-        if (d1 is 6 or 38 or 98 or 99) return;
+        // Controllers that are not parameters in their own right: the four carrying an
+        // NRPN, the two carrying an RPN, and the two bank-select halves. Bank select
+        // arrives as part of a patch change - the instrument sends CC 32, a Program Change
+        // and the selection NRPN together - so reporting it as an edit invents a
+        // "parameter 32" that does not exist.
+        if (d1 is 0 or 6 or 32 or 38 or 98 or 99 or 100 or 101) return;
         ParameterChanged?.Invoke(this, new ParameterEventArgs
         { IsNrpn = false, Controller = d1, Value = d2, Channel = (status & 0x0F) + 1 });
     }
@@ -944,7 +952,13 @@ public sealed class AutomapEngine : IDisposable
         pin = IntPtr.Zero;
     }
 
-    public void Dispose() => Stop();
+    public void Dispose()
+    {
+        if (_disposed) return;
+        Stop();
+        _disposed = true;
+        _editorWatch.Dispose();
+    }
 
     // ---- talking to the synth ----------------------------------------------
 

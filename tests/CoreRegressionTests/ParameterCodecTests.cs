@@ -305,4 +305,90 @@ static partial class Program
         // A value outside the label list must not throw or show a neighbour's label.
         Equal("9", ParameterCodec.Format(fade, 9), "an out-of-range value falls back to the number");
     }
+
+    // ---- dispatch corrections found by review -------------------------------
+
+    /// <summary>
+    /// A patch change arrives as bank select, a Program Change and the selection NRPN
+    /// together. The bank-select halves are part of that announcement, not edits of
+    /// parameters numbered 0 and 32 - which do not exist.
+    /// </summary>
+    static void BankSelectIsNotAParameterEdit()
+    {
+        using var engine = new AutomapEngine();
+        engine.Config.OutputPort = "";
+        var edits = new List<ParameterEventArgs>();
+        PatchSelectedEventArgs? picked = null;
+        engine.ParameterChanged += (_, e) => edits.Add(e);
+        engine.PatchSelected += (_, e) => picked = e;
+
+        // Exactly the sequence captured from the panel.
+        engine.DispatchEditorChannelMessage(0xB1, 32, 3);     // bank select LSB
+        engine.DispatchEditorChannelMessage(0xB1, 0, 0);      // bank select MSB
+        engine.DispatchEditorChannelMessage(0xB1, 99, 63);
+        engine.DispatchEditorChannelMessage(0xB1, 98, 1);
+        engine.DispatchEditorChannelMessage(0xB1, 6, 3);
+        engine.DispatchEditorChannelMessage(0xB1, 38, 79);
+
+        Equal(0, edits.Count, "nothing in a patch change is reported as a parameter edit");
+        True(picked != null, "the selection itself still arrives");
+        Equal(3, picked!.Bank, "with its bank");
+        Equal(79, picked!.Program, "and its slot");
+
+        // An ordinary controller still gets through.
+        engine.DispatchEditorChannelMessage(0xB1, 74, 90);
+        Equal(1, edits.Count, "an ordinary controller is still an edit");
+        Equal(74, edits[0].Controller, "reported by number");
+    }
+
+    /// <summary>
+    /// Parameters wider than seven bits exist, so the second data byte must not be thrown
+    /// away. Reading only the high half would report Clock BPM at 250 as 1.
+    /// </summary>
+    static void AWideNrpnKeepsBothHalves()
+    {
+        using var engine = new AutomapEngine();
+        engine.Config.OutputPort = "";
+        var edits = new List<ParameterEventArgs>();
+        engine.ParameterChanged += (_, e) => edits.Add(e);
+
+        // Clock BPM is NRPN (2,63); 250 is 1 then 122 across two data bytes.
+        engine.DispatchEditorChannelMessage(0xB1, 99, 2);
+        engine.DispatchEditorChannelMessage(0xB1, 98, 63);
+        engine.DispatchEditorChannelMessage(0xB1, 6, 1);
+        engine.DispatchEditorChannelMessage(0xB1, 38, 122);
+
+        Equal(2, edits.Count, "one event per data byte, as the instrument sends them");
+        True(!edits[0].HasLow, "the first carries only the high half");
+        Equal(1, edits[0].Wide, "so its whole value is just that");
+        True(edits[1].HasLow, "the second completes the value");
+        Equal(250, edits[1].Wide, "which reassembles to 250, not to 1");
+        Equal(122, edits[1].ValueLow, "with the low half kept");
+    }
+
+    /// <summary>
+    /// The selected NRPN parameter belongs to a connection. Carrying it across a detach
+    /// means the first bare data byte of the next session lands on a stale parameter.
+    /// </summary>
+    static void AttachingForgetsTheParameterSelectedBefore()
+    {
+        using var engine = new AutomapEngine();
+        engine.Config.OutputPort = "";
+        var edits = new List<ParameterEventArgs>();
+        engine.ParameterChanged += (_, e) => edits.Add(e);
+
+        engine.DispatchEditorChannelMessage(0xB1, 99, 2);
+        engine.DispatchEditorChannelMessage(0xB1, 98, 63);
+        engine.DispatchEditorChannelMessage(0xB1, 6, 5);
+        Equal(1, edits.Count, "a selected parameter takes a data byte");
+
+        edits.Clear();
+        engine.DetachEditor();
+        engine.DispatchEditorChannelMessage(0xB1, 6, 9);
+        Equal(0, edits.Count, "after detaching, a bare data byte belongs to nothing");
+
+        engine.AttachEditor();                       // refused without a connection, but still resets
+        engine.DispatchEditorChannelMessage(0xB1, 6, 9);
+        Equal(0, edits.Count, "and attaching does not resurrect the old selection");
+    }
 }

@@ -2,6 +2,18 @@ using System;
 
 namespace UltraNovaCtl.Core;
 
+/// <summary>Immutable metadata, including the flag bits that a rename must preserve.</summary>
+public sealed class MetadataEventArgs : EventArgs
+{
+    public MetadataEventArgs(string name, int category, int genre, byte flags)
+    { Name = name; Category = category; Genre = genre; Flags = flags; }
+    public string Name { get; }
+    public int Category { get; }
+    public int Genre { get; }
+    public byte Flags { get; }
+    public bool Chord => (Flags & PatchMetadata.ChordFlag) != 0;
+}
+
 /// <summary>
 /// A complete patch arrived from the instrument. <see cref="Data"/> is the raw 526-byte
 /// message, kept whole because the checksum and every parameter offset are defined against
@@ -52,13 +64,30 @@ public sealed class ParameterEventArgs : EventArgs
     public int Msb;
     public int Lsb;
 
+    /// <summary>
+    /// The value, or its high seven bits when <see cref="HasLow"/> says a second data byte
+    /// followed. Parameters wider than seven bits exist - Clock BPM runs to 250 - so a
+    /// consumer that reads only this for one of those gets the value divided by 128.
+    /// </summary>
     public int Value;
+
+    /// <summary>The low seven bits, meaningful only when <see cref="HasLow"/>.</summary>
+    public int ValueLow;
+
+    /// <summary>True when the instrument sent a second data byte for this parameter.</summary>
+    public bool HasLow;
+
+    /// <summary>
+    /// The whole value: fourteen bits when both halves arrived, seven when only one did.
+    /// This is what a consumer should read unless it knows the parameter is seven-bit.
+    /// </summary>
+    public int Wide => HasLow ? (Value << 7) | ValueLow : Value;
 
     /// <summary>One-based MIDI channel. The instrument uses channel 2 for these.</summary>
     public int Channel;
 
     public override string ToString() => IsNrpn
-        ? $"NRPN ({Msb},{Lsb}) = {Value} on channel {Channel}"
+        ? $"NRPN ({Msb},{Lsb}) = {(HasLow ? Wide + " (14-bit)" : Value.ToString())} on channel {Channel}"
         : $"CC {Controller} = {Value} on channel {Channel}";
 }
 

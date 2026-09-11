@@ -56,6 +56,7 @@ public sealed class NrpnReader
     readonly int[] _msb = new int[16];
     readonly int[] _lsb = new int[16];
     readonly byte[] _data = new byte[16];
+    readonly bool[] _hasData = new bool[16];
 
     public NrpnReader()
     {
@@ -75,20 +76,28 @@ public sealed class NrpnReader
         switch (controller)
         {
             case 99:                                  // NRPN parameter MSB
+                _hasData[ch] = false;
                 _msb[ch] = value;
                 return false;
             case 98:                                  // NRPN parameter LSB
+                _hasData[ch] = false;
                 _lsb[ch] = value;
                 return false;
             case 6:                                   // Data Entry MSB
                 if (_msb[ch] < 0 || _lsb[ch] < 0) return false;
                 _data[ch] = value;
+                _hasData[ch] = true;
                 nrpn = new Nrpn(ch + 1, _msb[ch], _lsb[ch], value, 0, false);
                 return true;
             case 38:                                  // Data Entry LSB
-                if (_msb[ch] < 0 || _lsb[ch] < 0) return false;
+                if (_msb[ch] < 0 || _lsb[ch] < 0 || !_hasData[ch]) return false;
                 nrpn = new Nrpn(ch + 1, _msb[ch], _lsb[ch], _data[ch], value, true);
                 return true;
+            case 100:                                 // RPN selection cancels NRPN
+            case 101:
+                _msb[ch] = _lsb[ch] = -1;
+                _hasData[ch] = false;
+                return false;
             default:
                 return false;
         }
@@ -97,7 +106,7 @@ public sealed class NrpnReader
     /// <summary>Forget the selected parameter on every channel.</summary>
     public void Reset()
     {
-        for (int i = 0; i < 16; i++) { _msb[i] = -1; _lsb[i] = -1; _data[i] = 0; }
+        for (int i = 0; i < 16; i++) { _msb[i] = -1; _lsb[i] = -1; _data[i] = 0; _hasData[i] = false; }
     }
 
     /// <summary>

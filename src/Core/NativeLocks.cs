@@ -38,25 +38,31 @@ public static class NativeLocks
     /// whenever we cannot tell - a probe that fails must not be reported as a native
     /// application being present, because the answer gates our own behaviour.
     /// </summary>
-    public static bool IsHeld(string name)
+    public static bool IsHeld(string name) => Probe(name, failClosed: false);
+
+    /// <summary>For editor writes, an inconclusive probe must never grant access.</summary>
+    internal static bool IsHeldOrUnknown(string name) => Probe(name, failClosed: true);
+
+    static bool Probe(string name, bool failClosed)
     {
-        if (string.IsNullOrWhiteSpace(name)) return false;
-        if (!OperatingSystem.IsWindows()) return false;
+        if (string.IsNullOrWhiteSpace(name)) return failClosed;
+        if (!OperatingSystem.IsWindows()) return failClosed;
 
         // The plug-in creates the name unqualified, which puts it in the session
         // namespace; a service would put the same name under Global. Both are checked, in
         // that order, because the editor is the case that matters in practice.
         foreach (string candidate in new[] { name, @"Local\" + name, @"Global\" + name })
-            if (Exists(candidate)) return true;
+            if (Exists(candidate, failClosed)) return true;
         return false;
     }
 
     [System.Runtime.Versioning.SupportedOSPlatform("windows")]
-    static bool Exists(string name)
+    static bool Exists(string name, bool failClosed)
     {
         // A named object can be a mutex or an event depending on who made it, and the
         // open fails with a different exception for each mismatch - so both are tried and
-        // every failure is treated as "not there", never as "there".
+        // missing/wrong-type results fall through. Unexpected errors only grant access
+        // to legacy informational callers, never to the editor's strict write gate.
         try
         {
             if (Mutex.TryOpenExisting(name, out var mutex))
@@ -67,7 +73,7 @@ public static class NativeLocks
         }
         catch (WaitHandleCannotBeOpenedException) { /* no such name, or not a mutex */ }
         catch (UnauthorizedAccessException) { return true; }   // it exists, we may not open it
-        catch { /* nothing here is worth failing a probe over */ }
+        catch { if (failClosed) return true; }
 
         try
         {
@@ -79,7 +85,7 @@ public static class NativeLocks
         }
         catch (WaitHandleCannotBeOpenedException) { }
         catch (UnauthorizedAccessException) { return true; }
-        catch { }
+        catch { if (failClosed) return true; }
 
         return false;
     }

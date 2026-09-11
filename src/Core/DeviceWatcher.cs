@@ -9,7 +9,7 @@ namespace UltraNovaCtl.Core;
 /// Tells us when the instrument is plugged in or pulled out.
 ///
 /// Windows announces device interfaces coming and going through WM_DEVICECHANGE, which
-/// needs a window to deliver to. So this runs a message-only window on its own thread,
+/// needs a window to deliver to. So this runs an invisible top-level window on its own thread,
 /// registers it for notifications about the audio device-interface class the instrument's
 /// KS filter belongs to, and raises an event per arrival and removal whose path names a
 /// Novation device. Hidi64.dll does exactly this with a window class it calls
