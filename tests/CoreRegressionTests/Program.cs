@@ -1562,19 +1562,60 @@ static partial class Program
 
     static void TheChecksumReplyIsFiveSevenBitGroups()
     {
-        const uint value = 0x062F1492;
-        var m = new byte[19];
-        byte[] head = { 0xF0, 0x00, 0x20, 0x29, 0x03, 0x01, 0x7F };
-        head.CopyTo(m, 0);
-        long v = value;
-        for (int i = 13; i <= 17; i++) { m[i] = (byte)(v & 0x7F); v >>= 7; }
-        m[18] = 0xF7;
-
+        // A literal message, not one built with the decoder's own arithmetic. The value is
+        // D046's, one of the four slots whose checksum the instrument reported and which
+        // the genre-bit rule reproduces; the groups are laid out as the disassembled parser
+        // has them, most significant at byte 13.
+        //
+        // The previous version of this check built its message by the inverse of whatever
+        // the decoder did, so it round-tripped happily while the decoder read the five
+        // groups backwards. That is the bug this literal exists to stop.
+        var m = new byte[]
+        {
+            0xF0, 0x00, 0x20, 0x29, 0x03, 0x01, 0x7F,
+            0x01,                     // single-slot checksum reply
+            0x02,                     // control byte, bit 1 set
+            0x00, 0x00,
+            0x00, 0x2E,               // bank 0, slot 46
+            0x00, 0x31, 0x3C, 0x29, 0x12,   // c4..c0 of 0x062F1492
+            0xF7,
+        };
         True(PatchProtocol.TryReadChecksumReply(m, out uint got), "the reply decodes");
-        Equal(value, got, "five seven-bit groups reassemble the instrument's value");
+        Equal(0x062F1492u, got, "byte 13 is the most significant group, byte 17 the least");
 
-        m[15] = 0xFF;                                   // not seven-bit clean
-        True(!PatchProtocol.TryReadChecksumReply(m, out _), "a byte with bit 7 set is refused");
+        // Reversing the groups must produce something different, or the check proves nothing.
+        var reversed = (byte[])m.Clone();
+        for (int i = 0; i < 5; i++) reversed[13 + i] = m[17 - i];
+        True(PatchProtocol.TryReadChecksumReply(reversed, out uint other), "the reversed message also decodes");
+        True(other != got, "and to a different value, so the order is actually being tested");
+
+        Equal(0x062F1492u, DecodeRoundTrip(0x062F1492u), "the builder and the reader agree");
+        Equal(1u, DecodeRoundTrip(1u), "on the smallest value");
+        Equal(0xFFFFFFFFu, DecodeRoundTrip(0xFFFFFFFFu), "and on a full-width one");
+
+        var bad = (byte[])m.Clone();
+        bad[15] = 0xFF;                                 // not seven-bit clean
+        True(!PatchProtocol.TryReadChecksumReply(bad, out _), "a byte with bit 7 set is refused");
+
+        var wrongCommand = (byte[])m.Clone();
+        wrongCommand[7] = PatchProtocol.CmdStatusReply;
+        True(!PatchProtocol.TryReadChecksumReply(wrongCommand, out _),
+             "another message with our header is not a checksum reply");
+
+        var noFlag = (byte[])m.Clone();
+        noFlag[8] = 0x00;                               // control bit 1 clear
+        True(!PatchProtocol.TryReadChecksumReply(noFlag, out _), "nor is one without the control flag");
+
+        var block = (byte[])m.Clone();
+        block[7] = PatchProtocol.CmdChecksumBlockReply;
+        block[8] = 0x00;
+        True(PatchProtocol.TryReadChecksumReply(block, out _), "a block reply needs no control flag");
+    }
+
+    static uint DecodeRoundTrip(uint value)
+    {
+        PatchProtocol.TryReadChecksumReply(PatchProtocol.ChecksumReply(value), out uint back);
+        return back;
     }
 
     static void NrpnBytesReassembleIntoOneParameter()

@@ -47,6 +47,11 @@ public static class PatchProtocol
     public const byte CmdStored = 0x41;      // host -> instrument, a stored slot
     public const byte CmdAck = 0x61;         // host -> instrument, dump accepted
     public const byte CmdStatus = 0x60;      // host -> instrument, who are you
+    public const byte CmdChecksumReply = 0x01;      // instrument -> host, one slot's checksum
+    public const byte CmdChecksumBlockReply = 0x0A; // instrument -> host, one of a stream
+
+    /// <summary>Length of a checksum reply.</summary>
+    public const int ChecksumReplyLength = 19;
 
     // Control bytes, index 8.
     public const byte CtrlNone = 0x00;
@@ -224,20 +229,55 @@ public static class PatchProtocol
     }
 
     /// <summary>
-    /// Decode a checksum reply: five seven-bit groups, most significant first, in bytes
-    /// 13 to 17 of a nineteen-byte message.
+    /// Decode a checksum reply. Nineteen bytes, with the value in five seven-bit groups at
+    /// bytes 13 to 17, <b>most significant first</b>:
+    ///
+    /// <code>
+    /// F0 00 20 29 03 01 7F &lt;01|0A&gt; &lt;ctrl&gt; 00 00 &lt;bank&gt; &lt;prog&gt; c4 c3 c2 c1 c0 F7
+    ///  0  1  2  3  4  5  6     7        8     9 10   11     12   13 14 15 16 17 18
+    /// </code>
+    ///
+    /// So byte 13 holds the top of the value and byte 17 the bottom. This was read the
+    /// other way round at first, and a round-trip check could not catch it because the
+    /// check encoded with the decoder's own order; the literal vector in the regression
+    /// checks exists because of that.
+    ///
+    /// A single-slot reply is command 0x01 with bit 1 of the control byte set; 0x0A marks
+    /// one reply in a multi-slot stream. Anything else with our header is refused, so a
+    /// status reply or a dump cannot be mistaken for a checksum.
     /// </summary>
     public static bool TryReadChecksumReply(byte[] sx, out uint checksum)
     {
         checksum = 0;
-        if (!HasHeader(sx) || sx.Length < 18) return false;
+        if (!HasHeader(sx) || sx.Length != ChecksumReplyLength) return false;
+        bool single = sx[7] == CmdChecksumReply && (sx[8] & 0x02) != 0;
+        if (!single && sx[7] != CmdChecksumBlockReply) return false;
+
         long v = 0;
-        for (int i = 17; i >= 13; i--)
+        for (int i = 13; i <= 17; i++)
         {
             if (sx[i] > 127) return false;
             v = (v << 7) | sx[i];
         }
         checksum = (uint)(v & 0xFFFFFFFF);
         return true;
+    }
+
+    /// <summary>
+    /// Build a checksum reply, for checks and for anything that needs to speak the
+    /// instrument's side. The inverse of <see cref="TryReadChecksumReply"/>.
+    /// </summary>
+    public static byte[] ChecksumReply(uint checksum, int bank = 0, int program = 0)
+    {
+        var m = new byte[ChecksumReplyLength];
+        Preamble.CopyTo(m, 0);
+        m[7] = CmdChecksumReply;
+        m[8] = 0x02;
+        m[11] = (byte)(bank & 0x7F);
+        m[12] = (byte)(program & 0x7F);
+        long v = checksum;
+        for (int i = 17; i >= 13; i--) { m[i] = (byte)(v & 0x7F); v >>= 7; }
+        m[ChecksumReplyLength - 1] = 0xF7;
+        return m;
     }
 }
