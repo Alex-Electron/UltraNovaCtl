@@ -137,6 +137,8 @@ public partial class MainWindow : Window
         _revert = this.FindControl<Button>("RevertBtn");
         _rescan = this.FindControl<Button>("RescanBtn");
         _reinit = this.FindControl<Button>("ReinitBtn");
+        var editorBtn = this.FindControl<Button>("EditorBtn");
+        if (editorBtn != null) editorBtn.Click += (_, _) => ShowEditor();
         _test = this.FindControl<Button>("TestBtn");
         _export = this.FindControl<Button>("ExportBtn");
         _import = this.FindControl<Button>("ImportBtn");
@@ -544,6 +546,21 @@ public partial class MainWindow : Window
     void SaveConfigQuietly()
     {
         try { _engine.Config.Save(); } catch { /* nothing useful to do while closing */ }
+    }
+
+    EditorWindow _editor;
+
+    /// <summary>
+    /// Open the sound editor, or bring the open one forward. One window only: two would
+    /// both claim the instrument's single write pin and fight over one edit buffer.
+    /// The engine is shared, so the editor uses the reader this window already owns.
+    /// </summary>
+    void ShowEditor()
+    {
+        if (_editor != null) { _editor.Activate(); return; }
+        _editor = new EditorWindow(_engine);
+        _editor.Closed += (_, _) => _editor = null;
+        _editor.Show(this);
     }
 
     void InitializeComponent() => AvaloniaXamlLoader.Load(this);

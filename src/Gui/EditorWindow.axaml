@@ -1,0 +1,77 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="UltraNovaCtl.Gui.EditorWindow"
+        Title="UltraNovaCtl — редактор звука" Width="880" Height="640"
+        Background="#0B0D11" MinWidth="700" MinHeight="480">
+
+  <Window.Styles>
+    <Style Selector="TextBlock.group">
+      <Setter Property="FontSize" Value="12"/>
+      <Setter Property="FontWeight" Value="SemiBold"/>
+      <Setter Property="Foreground" Value="#F5C87A"/>
+      <Setter Property="Margin" Value="0,14,0,6"/>
+    </Style>
+    <Style Selector="TextBlock.label">
+      <Setter Property="FontSize" Value="12"/>
+      <Setter Property="Foreground" Value="#9AA3B2"/>
+      <Setter Property="VerticalAlignment" Value="Center"/>
+    </Style>
+    <Style Selector="TextBlock.value">
+      <Setter Property="FontSize" Value="12"/>
+      <Setter Property="FontFamily" Value="Consolas,monospace"/>
+      <Setter Property="Foreground" Value="#E6E9EF"/>
+      <Setter Property="VerticalAlignment" Value="Center"/>
+    </Style>
+    <Style Selector="TextBlock.stat">
+      <Setter Property="FontSize" Value="11"/>
+      <Setter Property="Foreground" Value="#7A8496"/>
+    </Style>
+    <Style Selector="Button.tool">
+      <Setter Property="Background" Value="#1B1F27"/>
+      <Setter Property="Foreground" Value="#D8DEE9"/>
+      <Setter Property="BorderBrush" Value="#2A303B"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="Padding" Value="10,5"/>
+      <Setter Property="FontSize" Value="12"/>
+    </Style>
+  </Window.Styles>
+
+  <DockPanel>
+
+    <!-- Connection and patch identity. Everything here is read from the instrument. -->
+    <Border DockPanel.Dock="Top" Background="#15151B" BorderBrush="#24242C"
+            BorderThickness="0,0,0,1" Padding="12,8">
+      <Grid ColumnDefinitions="Auto,Auto,*,Auto,Auto">
+        <Button Name="AttachBtn" Grid.Column="0" Classes="tool" Content="Подключить"
+                ToolTip.Tip="Занять приватный канал редактора и запросить текущий звук."/>
+        <Button Name="RefreshBtn" Grid.Column="1" Classes="tool" Content="Перечитать"
+                Margin="6,0,0,0"
+                ToolTip.Tip="Запросить буфер редактирования заново."/>
+
+        <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="14"
+                    VerticalAlignment="Center" Margin="16,0,0,0">
+          <TextBlock Name="PatchName" FontSize="15" FontWeight="SemiBold"
+                     Foreground="#F5C87A" Text="патч не прочитан"/>
+          <TextBlock Name="PatchSlot" Classes="stat" VerticalAlignment="Center" Text=""/>
+        </StackPanel>
+
+        <TextBlock Name="DirtyText" Grid.Column="3" Classes="stat" VerticalAlignment="Center"
+                   Margin="0,0,12,0" Text=""/>
+        <TextBlock Name="StateText" Grid.Column="4" Classes="stat" VerticalAlignment="Center"
+                   Text="не подключён"/>
+      </Grid>
+    </Border>
+
+    <!-- What the instrument is saying, so a silent screen can be told from a broken one. -->
+    <Border DockPanel.Dock="Bottom" Background="#0E1116" BorderBrush="#20202A"
+            BorderThickness="0,1,0,0" Padding="12,6">
+      <TextBlock Name="LogText" Classes="stat" FontFamily="Consolas,monospace"
+                 Text="готов"/>
+    </Border>
+
+    <ScrollViewer>
+      <StackPanel Name="Params" Margin="16,4,16,16"/>
+    </ScrollViewer>
+
+  </DockPanel>
+</Window>
