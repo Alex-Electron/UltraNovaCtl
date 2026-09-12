@@ -14,7 +14,7 @@ namespace UltraNovaCtl.Gui;
 /// <summary>
 /// The first editor screen: a thin slice through the whole stack, on purpose.
 ///
-/// It shows a dozen parameters rather than all 497, because the point is not coverage but
+/// It shows thirteen parameters rather than all 497, because the point is not coverage but
 /// finding out whether the carefully checked core survives contact with a real interface
 /// and a real instrument. Everything below the surface is the production path: the engine's
 /// single Port 1 reader, the private write pin, the patch session, the parameter codec.

@@ -70,7 +70,7 @@
   this instrument arrived on channel 2: its reply says 0x01. The engine remembers what the
   last reply said and sends edits there by default. Confirmed on hardware: the session
   reports "канал 2" read from the reply, not from a constant.
-- A first editor screen, and it works on the instrument. A dozen oscillator, filter and
+- A first editor screen, and it works on the instrument. Thirteen oscillator, filter and
   envelope parameters in their own window, on the production path - the engine's single
   Port 1 reader, the private write pin, the patch session and the parameter codec, with no
   stand-in anywhere below the surface. The point of it was to find out whether a core that

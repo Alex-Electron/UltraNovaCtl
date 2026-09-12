@@ -102,7 +102,7 @@
                   ToolTip.Tip="Reopen the MIDI ports and redraw the synth. Use if the DAW stopped receiving, or after the synth was replugged."/>
           <Button Name="EditorBtn" Classes="tool" Content="Editor" Width="62"
                   Margin="6,0,0,0" FontSize="11"
-                  ToolTip.Tip="Open the sound editor. A first screen: a dozen oscillator, filter and envelope parameters on the instrument's private editor channel. The synth must be in SYNTH mode - in AUTOMAP its panel drives other instruments and does not sound."/>
+                  ToolTip.Tip="Open the sound editor. A first screen: thirteen oscillator, filter and envelope parameters on the instrument's private editor channel. The synth must be in SYNTH mode - in AUTOMAP its panel drives other instruments and does not sound."/>
           <Button Name="RescanBtn" Classes="tool" Content="&#x21BB;" Width="34"
                   Margin="6,0,0,0" FontSize="14"
                   ToolTip.Tip="Rescan MIDI devices - use after plugging an interface in"/>
