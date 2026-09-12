@@ -70,6 +70,20 @@
   this instrument arrived on channel 2: its reply says 0x01. The engine remembers what the
   last reply said and sends edits there by default. Confirmed on hardware: the session
   reports "канал 2" read from the reply, not from a constant.
+- A first editor screen, and it works on the instrument. A dozen oscillator, filter and
+  envelope parameters in their own window, on the production path - the engine's single
+  Port 1 reader, the private write pin, the patch session and the parameter codec, with no
+  stand-in anywhere below the surface. The point of it was to find out whether a core that
+  passes its checks survives contact with a window and real hardware. It does: the owner
+  confirmed all three legs by name - the filter frequency slider changes the sound, the
+  instrument's own filter knob moves the slider correctly and responsively, and the patch
+  name read back right. One parameter of the twelve, so the other eleven, the value lists
+  and the packed filter-link flags are still only covered by checks.
+- One thing that trips this up is worth naming, because it makes a working editor look
+  broken: the instrument must be in SYNTH mode. In AUTOMAP its panel drives other
+  instruments, the synth does not sound, and its knobs edit assignments rather than the
+  patch. The editor window now says so when it sees that mode. The engine itself does not
+  need Automap mode at all - only an open Kernel Streaming session.
 - New engine events for what arrives that way: a whole patch, a status reply carrying
   firmware and Local Control, a parameter edited elsewhere, and a patch selected on the
   panel. Patch selection is sent as two data bytes against one NRPN, bank then slot, and

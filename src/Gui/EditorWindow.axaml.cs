@@ -49,6 +49,7 @@ public partial class EditorWindow : Window
 
     bool _updating;
     bool _closed;
+    bool _automapWarned;
 
     /// <summary>One parameter: its description and the controls showing it.</summary>
     sealed class Row
@@ -266,7 +267,7 @@ public partial class EditorWindow : Window
     void OnAttachClicked(object sender, RoutedEventArgs e)
     {
         if (_engine.EditorAttached) { _engine.DetachEditor(); Say("отключён"); }
-        else if (!_engine.Connected) Say("движок не подключён к прибору — сначала AUTOMAP в главном окне");
+        else if (!_engine.Connected) Say("нет связи с прибором — подключись в главном окне");
         else Say(_engine.AttachEditor() ? "подключаюсь…" : $"подключиться не удалось ({_engine.EditorState})");
         PaintState();
     }
@@ -284,6 +285,16 @@ public partial class EditorWindow : Window
             EditorConnectionState.Faulted => "сбой соединения",
             _ => "не подключён",
         };
+
+        // In AUTOMAP the panel is driving other instruments: the synth does not sound and
+        // its knobs edit assignments rather than the patch. An editor is useless there, and
+        // says so rather than looking broken.
+        if (_engine.AutomapActive && !_automapWarned)
+        {
+            _automapWarned = true;
+            Say("прибор в режиме AUTOMAP: панель правит назначения, а не звук. Нажми SYNTH на приборе");
+        }
+        else if (!_engine.AutomapActive) _automapWarned = false;
         _attachBtn.Content = _engine.EditorAttached ? "Отключить" : "Подключить";
 
         // Controls are live only when the instrument is actually ours to drive.
